@@ -32,13 +32,12 @@ void Example_Soft_Start(void) {
   Motor_SetFrequency(2.0f); // Start at low frequency
 
   // Gradually increase amplitude to avoid inrush current
-  for (float amplitude = 0.0f; amplitude <= 1.0f; amplitude += 0.01f) {
+  for (float amplitude = 0.0f; amplitude <= 0.92f; amplitude += 0.01f) {
     Motor_SetAmplitude(amplitude);
 
     // Wait 100ms per step (total ramp: ~10 seconds)
     for (int i = 0; i < 100; i++) {
-      Motor_Update();
-      HAL_Delay(1);
+        HAL_Delay(1);
     }
   }
 
@@ -65,17 +64,16 @@ void Example_VF_Control_Ramp(void) {
 
     // Maintain V/f ratio: voltage = frequency * constant
     float voltage = freq * vf_constant;
-    if (voltage > 1.0f)
-      voltage = 1.0f; // Clamp to maximum
-    if (voltage < 0.1f)
-      voltage = 0.1f; // Minimum voltage to overcome friction
+    if (voltage > 0.95f)
+      voltage = 0.95f; // Clamp to maximum
+    if (voltage < 0.15f)
+      voltage = 0.15f; // Minimum voltage to overcome friction
 
     Motor_SetAmplitude(voltage);
 
     // Ramp over 20 seconds
     for (int i = 0; i < 500; i++) {
-      Motor_Update();
-      HAL_Delay(1);
+        HAL_Delay(1);
     }
   }
 }
@@ -94,8 +92,7 @@ void Example_Frequency_Sweep(void) {
 
     // Hold each frequency for 2 seconds
     for (int i = 0; i < 2000; i++) {
-      Motor_Update();
-      HAL_Delay(1);
+        HAL_Delay(1);
     }
   }
 
@@ -116,8 +113,7 @@ void Example_SCurve_Acceleration(void) {
     Motor_SetFrequency(freq);
 
     for (int i = 0; i < 10; i++) {
-      Motor_Update();
-      HAL_Delay(1);
+        HAL_Delay(1);
     }
   }
 
@@ -127,8 +123,7 @@ void Example_SCurve_Acceleration(void) {
     Motor_SetFrequency(freq);
 
     for (int i = 0; i < 10; i++) {
-      Motor_Update();
-      HAL_Delay(1);
+        HAL_Delay(1);
     }
   }
 
@@ -138,16 +133,14 @@ void Example_SCurve_Acceleration(void) {
     Motor_SetFrequency(freq);
 
     for (int i = 0; i < 10; i++) {
-      Motor_Update();
-      HAL_Delay(1);
+        HAL_Delay(1);
     }
   }
 
   // Hold at 30 Hz for 5 seconds
   Motor_SetFrequency(30.0f);
   for (int i = 0; i < 5000; i++) {
-    Motor_Update();
-    HAL_Delay(1);
+      HAL_Delay(1);
   }
 
   Motor_Stop();
@@ -177,7 +170,6 @@ void Example_Interactive_Control_Update(void) {
 
   Motor_SetFrequency(current_frequency);
   Motor_SetAmplitude(current_amplitude);
-  Motor_Update();
 }
 
 // Call this when user presses UP button
@@ -239,12 +231,10 @@ void main(void)
 
   while (1)
   {
-    // Main control loop at 1 kHz
-    Motor_Update();
-
+    // Main control loop - DMA handles motor update in background
+    
     // Add other tasks here (ADC reading, serial communication, etc.)
-    // But keep total time per iteration close to 1ms
-
+    
     HAL_Delay(1);
   }
 }
@@ -253,7 +243,7 @@ void main(void)
 /* ============================================================================
  * NOTES:
  *
- * 1. Always call Motor_Update() at a fixed rate (1 kHz recommended)
+ * 1. DMA automatically handles waveform generation (Motor_Update loop not needed)
  * 2. Frequency range: 0.1 Hz to 50 Hz (motor dependent)
  * 3. Amplitude range: 0.0 to 1.0 (0% to 100% voltage)
  * 4. Use soft-start to reduce inrush current on DC link

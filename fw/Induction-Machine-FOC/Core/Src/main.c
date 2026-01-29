@@ -24,16 +24,28 @@
 #include "stm32_hal_legacy.h"
 #include "stm32g4xx_hal_hrtim.h"
 #include <complex.h>
+#include <stdint.h>
+#include "sine_op.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+/**
+ * @brief Motor Control Parameter Structure
+ */
+typedef struct {
+  float frequency;      // Output frequency in Hz
+  float amplitude;      // Output amplitude (0.0 to 1.0)
+  float phase;          // Current phase angle in radians
+  float phase_step;     // Phase increment per PWM cycle
+  uint16_t period;      // PWM period in timer ticks
+} Motor_Control_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define DMA_BUFFER_SIZE  256
+#define BUFF_LEN         DMA_BUFFER_SIZE
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -45,41 +57,43 @@
 CORDIC_HandleTypeDef hcordic;
 
 HRTIM_HandleTypeDef hhrtim1;
+DMA_HandleTypeDef hdma_hrtim1_a;
+DMA_HandleTypeDef hdma_hrtim1_c;
+DMA_HandleTypeDef hdma_hrtim1_d;
 
 /* USER CODE BEGIN PV */
 
-/* Motor Control Parameters */
-typedef struct {
-  float frequency;      // Output frequency in Hz
-  float amplitude;      // Output amplitude (0.0 to 1.0)
-  float phase;          // Current phase angle in radians
-  float phase_step;     // Phase increment per PWM cycle
-  uint16_t period;      // PWM period (already set to 4250)
-} Motor_Control_t;
-
+/* Motor Control State */
 Motor_Control_t motor_ctrl = {
-  .frequency = 10.0f,   // Start with 10 Hz
-  .amplitude = 0.3f,    // 30% modulation index
-  .phase = 0.0f,
-  .period = 4250
+  .frequency  = 10.0f,   // Start with 10 Hz
+  .amplitude  = 0.3f,    // 30% modulation index
+  .phase      = 0.0f,
+  .period     = 4250     // Corresponds to PWM frequency
 };
 
-/* Debug variables for monitoring */
-volatile uint16_t debug_cmp_a = 0;
-volatile uint16_t debug_cmp_b = 0;
-volatile uint16_t debug_cmp_c = 0;
-volatile float debug_sin_a = 0.0f;
-volatile float debug_sin_b = 0.0f;
-volatile float debug_sin_c = 0.0f;
-volatile float debug_phase = 0.0f;
-volatile uint32_t debug_update_count = 0;
-volatile int32_t debug_sine_q31 = 0;
+/* Debug variables */
+volatile uint32_t debug_dma_half_cnt = 0;
+volatile uint32_t debug_dma_full_cnt = 0;
+
+/* DMA Double Buffers for 3 Phases */
+static uint32_t dma_buffer_phase_a[DMA_BUFFER_SIZE];
+static uint32_t dma_buffer_phase_b[DMA_BUFFER_SIZE];
+static uint32_t dma_buffer_phase_c[DMA_BUFFER_SIZE];
+
+/* Phase Accumulators */
+static uint32_t phase_accumulator = 0;
+static uint32_t phase_increment = 0;
+
+/* Control Variables */
+static const uint32_t PWM_PERIOD_CYCLES = 4250;
+static int16_t modulation_index_q15 = (int16_t)(0.30f * 32767); // Initial modulation index
 
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_HRTIM1_Init(void);
 static void MX_CORDIC_Init(void);
 /* USER CODE BEGIN PFP */
@@ -90,8 +104,7 @@ void Motor_Stop(void);
 void Motor_SetFrequency(float frequency);
 void Motor_SetAmplitude(float amplitude);
 void Motor_Update(void);
-void Update_3Phase_PWM(float phase, float amplitude);
-
+void Example_Soft_Start(void);
 
 void Example_VF_Control_Ramp(void);
 /* USER CODE END PFP */
@@ -99,32 +112,45 @@ void Example_VF_Control_Ramp(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-/**
- * @brief Fast sine calculation using CORDIC hardware accelerator
- * @param angle: Angle in radians
- * @retval Sine value (-1.0 to 1.0)
- * @note CORDIC must be pre-configured in MX_CORDIC_Init() for sine calculation
- */
-static inline float cordic_sin(float angle)
+void fill_block(uint32_t start, uint32_t count)
 {
-  const float TWO_PI = 6.28318530718f;
-  const float PI = 3.14159265359f;
-  
-  // Normalize angle to [0, 2*PI]
-  while (angle > TWO_PI) angle -= TWO_PI;
-  while (angle < 0.0f) angle += TWO_PI;
-  
-  // Convert to [-PI, PI] range for CORDIC
-  if (angle > PI) angle -= TWO_PI;
-  
-  // Convert radians to Q1.31: q31_value = angle * (2^31 / PI)
-  int32_t angle_q31 = (int32_t)(angle * 683565275.5768f);
-  
-  int32_t sine_q31;
-  HAL_CORDIC_CalculateZO(&hcordic, &angle_q31, &sine_q31, 1, HAL_MAX_DELAY);
-  
-  return (float)sine_q31 / 2147483648.0f;
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t phU = phase_accumulator;
+        uint32_t phV = phase_accumulator + PHASE_120;
+        uint32_t phW = phase_accumulator + PHASE_240;
+
+        int16_t sU = get_sine_q15(phU);
+        int16_t sV = get_sine_q15(phV);
+        int16_t sW = get_sine_q15(phW);
+
+        dma_buffer_phase_a[start + i] = sine_to_cmp(sU, PWM_PERIOD_CYCLES, modulation_index_q15);
+        dma_buffer_phase_b[start + i] = sine_to_cmp(sV, PWM_PERIOD_CYCLES, modulation_index_q15);
+        dma_buffer_phase_c[start + i] = sine_to_cmp(sW, PWM_PERIOD_CYCLES, modulation_index_q15);
+
+        phase_accumulator += phase_increment; // advance one PWM update step
+    }
 }
+
+/**
+ * @brief DMA Half Transfer Complete Callback - refill first half of buffer
+ */
+void HAL_DMA_XferHalfCpltCallback(DMA_HandleTypeDef *hdma)
+{
+    debug_dma_half_cnt++;
+    // Refill first half of buffer (indices 0 to BUFF_LEN/2-1)
+    fill_block(0, BUFF_LEN / 2);
+}
+
+/**
+ * @brief DMA Full Transfer Complete Callback - refill second half of buffer
+ */
+void HAL_DMA_XferCpltCallback(DMA_HandleTypeDef *hdma)
+{
+    debug_dma_full_cnt++;
+    // Refill second half of buffer (indices BUFF_LEN/2 to BUFF_LEN-1)
+    fill_block(BUFF_LEN / 2, BUFF_LEN / 2);
+}
+
 
 /* USER CODE END 0 */
 
@@ -136,6 +162,10 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
+/* Debug variables for monitoring */
+uint8_t button = 0;
+float freq = 0;
+float amp = 0;
 
   /* USER CODE END 1 */
 
@@ -157,19 +187,37 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_HRTIM1_Init();
   MX_CORDIC_Init();
   /* USER CODE BEGIN 2 */
 
-  // Start HRTIM timers for 3-phase PWM generation
-  Motor_Start();
+  // Build sine lookup table
+  build_sine_lut();
   
-  // Set initial motor parameters for testing
-  Motor_SetFrequency(1);    // 1 Hz
-  Motor_SetAmplitude(0.9f);     // 50% voltage
+  // Set output frequency (e.g., 50 Hz fundamental)
+  // PWM frequency = 170 MHz / (2 * 4250) = 20 kHz
+  // Each DMA update happens at PWM frequency
+  float f_fundamental_hz = 50.0f;
+  float f_pwm_hz = 170000000.0f / (2.0f * 4250.0f);  // ~20 kHz
+  phase_increment = (uint32_t)((double)f_fundamental_hz * 4294967296.0 / (double)f_pwm_hz);
   
-  // Example_VF_Control_Ramp();  // Commented out - blocking function
+  // Fill both halves of the buffer initially
+  fill_block(0, BUFF_LEN);
 
+  // Register DMA callbacks
+  hdma_hrtim1_a.XferCpltCallback = HAL_DMA_XferCpltCallback;
+  hdma_hrtim1_a.XferHalfCpltCallback = HAL_DMA_XferHalfCpltCallback;
+
+  // Start DMA transfers in circular mode with half-transfer interrupt
+  HAL_DMA_Start_IT(&hdma_hrtim1_a, (uint32_t)dma_buffer_phase_a, (uint32_t)&HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP1xR, BUFF_LEN);
+  HAL_DMA_Start_IT(&hdma_hrtim1_c, (uint32_t)dma_buffer_phase_b, (uint32_t)&HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP1xR, BUFF_LEN);
+  HAL_DMA_Start_IT(&hdma_hrtim1_d, (uint32_t)dma_buffer_phase_c, (uint32_t)&HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_D].CMP1xR, BUFF_LEN);
+
+  // Start HRTIM timers for 3-phase PWM generation
+  // Motor_Start();
+  Example_VF_Control_Ramp();
+  
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -180,10 +228,12 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     
-    // Continuously update PWM to generate 3-phase sinusoidal signals
-    Motor_Update();
-    HAL_Delay(1);  // 1ms update rate (~1kHz control loop)
-    
+    if (button == 1) 
+    {
+      Motor_SetAmplitude(amp); // 90% modulation index
+      Motor_SetFrequency(freq); // 25 Hz
+      button = 0;
+    }
   }
   /* USER CODE END 3 */
 }
@@ -326,10 +376,10 @@ static void MX_HRTIM1_Init(void)
   pTimerCfg.StartOnSync = HRTIM_SYNCSTART_DISABLED;
   pTimerCfg.ResetOnSync = HRTIM_SYNCRESET_DISABLED;
   pTimerCfg.DACSynchro = HRTIM_DACSYNC_NONE;
-  pTimerCfg.PreloadEnable = HRTIM_PRELOAD_ENABLED;
+  pTimerCfg.PreloadEnable = HRTIM_PRELOAD_DISABLED;
   pTimerCfg.UpdateGating = HRTIM_UPDATEGATING_INDEPENDENT;
   pTimerCfg.BurstMode = HRTIM_TIMERBURSTMODE_MAINTAINCLOCK;
-  pTimerCfg.RepetitionUpdate = HRTIM_UPDATEONREPETITION_ENABLED;
+  pTimerCfg.RepetitionUpdate = HRTIM_UPDATEONREPETITION_DISABLED;
   pTimerCfg.ReSyncUpdate = HRTIM_TIMERESYNC_UPDATE_UNCONDITIONAL;
   if (HAL_HRTIM_WaveformTimerConfig(&hhrtim1, HRTIM_TIMERINDEX_MASTER, &pTimerCfg) != HAL_OK)
   {
@@ -359,13 +409,16 @@ static void MX_HRTIM1_Init(void)
   }
   if (HAL_HRTIM_RollOverModeConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, HRTIM_TIM_FEROM_BOTH|HRTIM_TIM_BMROM_BOTH
                               |HRTIM_TIM_ADROM_BOTH|HRTIM_TIM_OUTROM_BOTH
-                              |HRTIM_TIM_ROM_BOTH) != HAL_OK)
+                              |HRTIM_TIM_ROM_VALLEY) != HAL_OK)
   {
     Error_Handler();
   }
   pTimerCfg.InterruptRequests = HRTIM_TIM_IT_NONE;
-  pTimerCfg.DMARequests = HRTIM_TIM_DMA_NONE;
-  pTimerCfg.RepetitionUpdate = HRTIM_UPDATEONREPETITION_DISABLED;
+  pTimerCfg.DMARequests = HRTIM_TIM_DMA_UPD;
+  pTimerCfg.DMASrcAddress = 0;
+  pTimerCfg.DMADstAddress = 0;
+  pTimerCfg.DMASize = 1;
+  pTimerCfg.PreloadEnable = HRTIM_PRELOAD_ENABLED;
   pTimerCfg.PushPull = HRTIM_TIMPUSHPULLMODE_DISABLED;
   pTimerCfg.FaultEnable = HRTIM_TIMFAULTENABLE_NONE;
   pTimerCfg.FaultLock = HRTIM_TIMFAULTLOCK_READWRITE;
@@ -459,7 +512,7 @@ static void MX_HRTIM1_Init(void)
   }
   if (HAL_HRTIM_RollOverModeConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_C, HRTIM_TIM_FEROM_BOTH|HRTIM_TIM_BMROM_BOTH
                               |HRTIM_TIM_ADROM_BOTH|HRTIM_TIM_OUTROM_BOTH
-                              |HRTIM_TIM_ROM_BOTH) != HAL_OK)
+                              |HRTIM_TIM_ROM_VALLEY) != HAL_OK)
   {
     Error_Handler();
   }
@@ -477,7 +530,7 @@ static void MX_HRTIM1_Init(void)
   }
   if (HAL_HRTIM_RollOverModeConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_D, HRTIM_TIM_FEROM_BOTH|HRTIM_TIM_BMROM_BOTH
                               |HRTIM_TIM_ADROM_BOTH|HRTIM_TIM_OUTROM_BOTH
-                              |HRTIM_TIM_ROM_BOTH) != HAL_OK)
+                              |HRTIM_TIM_ROM_VALLEY) != HAL_OK)
   {
     Error_Handler();
   }
@@ -489,6 +542,32 @@ static void MX_HRTIM1_Init(void)
 
   /* USER CODE END HRTIM1_Init 2 */
   HAL_HRTIM_MspPostInit(&hhrtim1);
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMAMUX1_CLK_ENABLE();
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+  /* DMA1_Channel2_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel2_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel2_IRQn);
+  /* DMA1_Channel3_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
+  /* DMAMUX_OVR_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMAMUX_OVR_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMAMUX_OVR_IRQn);
 
 }
 
@@ -514,6 +593,28 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+/**
+ * @brief Set the fundamental output frequency
+ * @param f_out_hz: Desired output frequency in Hz
+ * @note Call this to change motor speed. Safe to call during operation.
+ */
+void set_fundamental_frequency(float f_out_hz)
+{
+    float f_pwm_hz = 170000000.0f / (2.0f * 4250.0f);  // ~20 kHz PWM frequency
+    phase_increment = (uint32_t)((double)f_out_hz * 4294967296.0 / (double)f_pwm_hz);
+}
+
+/**
+ * @brief Set the modulation index (amplitude)
+ * @param modulation: 0.0 to 1.0 (0% to 100%)
+ */
+void set_modulation_index(float modulation)
+{
+    if (modulation > 1.0f) modulation = 1.0f;
+    if (modulation < 0.0f) modulation = 0.0f;
+    modulation_index_q15 = (int16_t)(modulation * 32767.0f);
+}
 
 /**
  * @brief Start the 3-phase induction motor
@@ -552,9 +653,7 @@ void Motor_Stop(void)
 void Motor_SetFrequency(float frequency)
 {
   motor_ctrl.frequency = frequency;
-  // Calculate phase step: (2*PI*frequency) / control loop frequency
-  // Control loop is 1kHz, so phase_step = 2*PI*frequency/1000
-  motor_ctrl.phase_step = (2.0f * 3.14159265f * frequency) / 1000.0f;
+  set_fundamental_frequency(frequency);
 }
 
 /**
@@ -563,98 +662,8 @@ void Motor_SetFrequency(float frequency)
  */
 void Motor_SetAmplitude(float amplitude)
 {
-  if (amplitude > 1.0f)
-    amplitude = 1.0f;
-  if (amplitude < 0.0f)
-    amplitude = 0.0f;
   motor_ctrl.amplitude = amplitude;
-}
-
-/**
- * @brief Three-phase PWM generation using Space Vector PWM (SVPWM)
- * Generates sinusoidal PWM signals with 120-degree phase shift for 3-phase motor
- * @param phase: Current phase angle in radians
- * @param amplitude: Modulation index (0.0 to 1.0)
- */
-void Update_3Phase_PWM(float phase, float amplitude)
-{
-  // Calculate three-phase sinusoidal signals with 120-degree offset
-  float pi_2_3 = 2.0944f;    // 2*PI/3 = 120 degrees
-  float pi_4_3 = 4.1888f;    // 4*PI/3 = 240 degrees
-  
-  // Phase A: sin(phase) - using CORDIC accelerator
-  float sin_a = cordic_sin(phase) * amplitude;
-  
-  // Phase B: sin(phase - 120°) - using CORDIC accelerator
-  float sin_b = cordic_sin(phase - pi_2_3) * amplitude;
-  
-  // Phase C: sin(phase - 240°) - using CORDIC accelerator
-  float sin_c = cordic_sin(phase - pi_4_3) * amplitude;
-  
-  // Convert sinusoidal signals to duty cycle (0 to motor_ctrl.period)
-  // Add offset of 0.5 to center the signal (range: 0.5 to 1.5, then clamp to 0.0 to 1.0)
-  float duty_a = (sin_a + 1.0f) * 0.5f;
-  float duty_b = (sin_b + 1.0f) * 0.5f;
-  float duty_c = (sin_c + 1.0f) * 0.5f;
-  
-  // Clamp values to valid range
-  if (duty_a > 1.0f) duty_a = 1.0f;
-  if (duty_a < 0.0f) duty_a = 0.0f;
-  if (duty_b > 1.0f) duty_b = 1.0f;
-  if (duty_b < 0.0f) duty_b = 0.0f;
-  if (duty_c > 1.0f) duty_c = 1.0f;
-  if (duty_c < 0.0f) duty_c = 0.0f;
-  
-  // Convert duty cycle to compare register value
-  // In up/down mode with set-on-up/reset-on-down, CMP = period * duty
-  uint16_t cmp_a = (uint16_t)(motor_ctrl.period * (1.0f - duty_a));
-  uint16_t cmp_b = (uint16_t)(motor_ctrl.period * (1.0f - duty_b));
-  uint16_t cmp_c = (uint16_t)(motor_ctrl.period * (1.0f - duty_c));
-  
-  // Store debug values for monitoring
-  debug_sin_a = sin_a;
-  debug_sin_b = sin_b;
-  debug_sin_c = sin_c;
-  debug_cmp_a = cmp_a;
-  debug_cmp_b = cmp_b;
-  debug_cmp_c = cmp_c;
-  debug_phase = phase;
-  
-  // Update HRTIM compare registers
-  HRTIM_CompareCfgTypeDef pCompareCfg = {0};
-  
-  // Phase A (Timer A, Compare 1)
-  pCompareCfg.CompareValue = cmp_a;
-  HAL_HRTIM_WaveformCompareConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, HRTIM_COMPAREUNIT_1, &pCompareCfg);
-  
-  // Phase B (Timer C)
-  pCompareCfg.CompareValue = cmp_b;
-  HAL_HRTIM_WaveformCompareConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_C, HRTIM_COMPAREUNIT_1, &pCompareCfg);
-  
-  // Phase C (Timer D)
-  pCompareCfg.CompareValue = cmp_c;
-  HAL_HRTIM_WaveformCompareConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_D, HRTIM_COMPAREUNIT_1, &pCompareCfg);
-}
-
-/**
- * @brief Main motor control update function - Call this periodically (1kHz recommended)
- */
-void Motor_Update(void)
-{
-  // Update phase angle
-  motor_ctrl.phase += motor_ctrl.phase_step;
-  
-  // Keep phase angle within 2*PI range to prevent overflow
-  if (motor_ctrl.phase > 6.2832f)  // 2*PI
-  {
-    motor_ctrl.phase -= 6.2832f;
-  }
-      
-  // Update PWM signals with current phase and amplitude
-  Update_3Phase_PWM(motor_ctrl.phase, motor_ctrl.amplitude);
-  
-  // Increment debug counter
-  debug_update_count++;
+  set_modulation_index(amplitude);
 }
 
 /* USER CODE END 4 */
