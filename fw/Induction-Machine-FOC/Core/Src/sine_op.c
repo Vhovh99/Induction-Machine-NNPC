@@ -112,6 +112,16 @@ uint32_t sine_to_cmp(int16_t s_q15, uint32_t period_cycles, int16_t modulation_q
     //    Shift back from Q15 to integer domain
     compare_val >>= 15;
     
+    // Limit max compare value to ensure Low Side pulse is longer than deadtime
+    // HRTIM Deadtime is configured to 200 ticks. We preserve 250 ticks to ensure partial switching.
+    // This prevents the Low Side from disappearing completely ("0 state") due to deadtime insertion.
+    const uint32_t MIN_OFF_TIME = 250;
+    if (period_cycles > MIN_OFF_TIME) {
+        if (compare_val > (period_cycles - MIN_OFF_TIME)) {
+            compare_val = period_cycles - MIN_OFF_TIME;
+        }
+    }
+
     return (uint32_t)compare_val;
 }
 
