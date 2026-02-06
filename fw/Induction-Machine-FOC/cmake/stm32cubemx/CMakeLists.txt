@@ -25,8 +25,6 @@ set(MX_Application_Src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/sysmem.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/syscalls.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../startup_stm32g474xx.s
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/sine_op.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/motor_control_example.c
 )
 
 # STM32 HAL/LL Drivers
