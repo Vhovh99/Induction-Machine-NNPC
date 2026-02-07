@@ -44,10 +44,10 @@ void CurrentSense_Start(void)
     {
         Error_Handler();
     }
-    if (HAL_ADCEx_InjectedStart(&hadc2) != HAL_OK)
-    {
-        Error_Handler();
-    }
+    // if (HAL_ADCEx_InjectedStart(&hadc2) != HAL_OK)
+    // {
+    //     Error_Handler();
+    // }
 }
 
 CurSense_Data_t CurrentSense_Read(void)

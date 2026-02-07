@@ -274,6 +274,7 @@ float theta = 0.0f; // Rotor angle (electrical)
   // Register DMA callbacks
   hdma_hrtim1_a.XferCpltCallback = HAL_DMA_XferCpltCallback;
   hdma_hrtim1_a.XferHalfCpltCallback = HAL_DMA_XferHalfCpltCallback;
+  
 
   // Start DMA transfers in circular mode with half-transfer interrupt
   HAL_DMA_Start_IT(&hdma_hrtim1_a, (uint32_t)dma_buffer_phase_a, (uint32_t)&HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_A].CMP1xR, BUFF_LEN);
@@ -1050,6 +1051,9 @@ void Motor_Start(void)
      All slave timers (A, C, D) are configured to reset on Master Period, 
      ensuring Center-Aligned synchronized PWM.
   */
+  __HAL_HRTIM_TIMER_ENABLE_DMA(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, HRTIM_TIM_DMA_RST);
+  __HAL_HRTIM_TIMER_ENABLE_DMA(&hhrtim1, HRTIM_TIMERINDEX_TIMER_C, HRTIM_TIM_DMA_RST);
+  __HAL_HRTIM_TIMER_ENABLE_DMA(&hhrtim1, HRTIM_TIMERINDEX_TIMER_D, HRTIM_TIM_DMA_RST);
   
   // Enable Outputs
   HAL_HRTIM_WaveformOutputStart(&hhrtim1, HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2 |
