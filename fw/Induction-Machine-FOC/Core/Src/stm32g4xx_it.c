@@ -250,49 +250,11 @@ void DMA1_Channel3_IRQHandler(void)
 void HRTIM1_Master_IRQHandler(void)
 {
   /* USER CODE BEGIN HRTIM1_Master_IRQn 0 */
-  if (__HAL_HRTIM_MASTER_GET_FLAG(&hhrtim1, HRTIM_MASTER_FLAG_MREP))
-  {
-    // Master PERIOD event (0° for Phase A / Timer A)
-    __HAL_HRTIM_MASTER_CLEAR_IT(&hhrtim1, HRTIM_MASTER_IT_MREP);
-    
-    // Enable HTIM_A outputs 
-    __HAL_HRTIM_TIMER_ENABLE_DMA(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, HRTIM_TIM_DMA_RST);
-    HAL_HRTIM_WaveformCounterStart(&hhrtim1, HRTIM_TIMERID_TIMER_A);
-    HAL_HRTIM_WaveformOutputStart(&hhrtim1, HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2);
-    
-    // As all the timers started now we can stop the master interrupts
-    __HAL_HRTIM_MASTER_DISABLE_IT(&hhrtim1, HRTIM_MASTER_IT_MREP);
-  }
-  
-  if (__HAL_HRTIM_MASTER_GET_FLAG(&hhrtim1, HRTIM_MASTER_FLAG_MCMP1))
-  {
-    // Master CMP1 event (120° for Phase B / Timer C)
-    __HAL_HRTIM_MASTER_CLEAR_IT(&hhrtim1, HRTIM_MASTER_IT_MCMP1);
-    
-    // Enable HTIM_C outputs
-    __HAL_HRTIM_TIMER_ENABLE_DMA(&hhrtim1, HRTIM_TIMERINDEX_TIMER_C, HRTIM_TIM_DMA_RST);
-    HAL_HRTIM_WaveformCounterStart(&hhrtim1, HRTIM_TIMERID_TIMER_C);
-    HAL_HRTIM_WaveformOutputStart(&hhrtim1, HRTIM_OUTPUT_TC1 | HRTIM_OUTPUT_TC2);
-    __HAL_HRTIM_MASTER_DISABLE_IT(&hhrtim1, HRTIM_MASTER_IT_MCMP1);
-  }
-  
-  if (__HAL_HRTIM_MASTER_GET_FLAG(&hhrtim1, HRTIM_MASTER_FLAG_MCMP2))
-  {
-    // Master CMP2 event (240° for Phase C / Timer D)
-    __HAL_HRTIM_MASTER_CLEAR_IT(&hhrtim1, HRTIM_MASTER_IT_MCMP2);
-    // Enable HTIM_D outputs 
-    __HAL_HRTIM_TIMER_ENABLE_DMA(&hhrtim1, HRTIM_TIMERINDEX_TIMER_D, HRTIM_TIM_DMA_RST);
-    HAL_HRTIM_WaveformCounterStart(&hhrtim1, HRTIM_TIMERID_TIMER_D);
-    HAL_HRTIM_WaveformOutputStart(&hhrtim1, HRTIM_OUTPUT_TD1 | HRTIM_OUTPUT_TD2);
-    __HAL_HRTIM_MASTER_DISABLE_IT(&hhrtim1, HRTIM_MASTER_IT_MCMP2);
-  }
   
   /* USER CODE END HRTIM1_Master_IRQn 0 */
   HAL_HRTIM_IRQHandler(&hhrtim1,HRTIM_TIMERINDEX_MASTER);
   /* USER CODE BEGIN HRTIM1_Master_IRQn 1 */
   
-  // Check which event triggered the interrupt
-
   /* USER CODE END HRTIM1_Master_IRQn 1 */
 }
 

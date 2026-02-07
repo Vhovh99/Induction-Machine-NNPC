@@ -135,9 +135,37 @@ void fill_block(uint32_t start, uint32_t count)
         int16_t sV = get_sine_q15(phV);
         int16_t sW = get_sine_q15(phW);
 
-        dma_buffer_phase_a[start + i] = sine_to_cmp(sU, PWM_PERIOD_CYCLES, modulation_index_q15);
-        dma_buffer_phase_b[start + i] = sine_to_cmp(sV, PWM_PERIOD_CYCLES, modulation_index_q15);
-        dma_buffer_phase_c[start + i] = sine_to_cmp(sW, PWM_PERIOD_CYCLES, modulation_index_q15);
+        // SVPWM Implementation (Min-Max Injection)
+        int16_t min_v = sU;
+        int16_t max_v = sU;
+
+        if (sV < min_v) min_v = sV;
+        if (sV > max_v) max_v = sV;
+
+        if (sW < min_v) min_v = sW;
+        if (sW > max_v) max_v = sW;
+
+        // Calculate zero-sequence voltage: -0.5 * (min + max)
+        int16_t v_offset = -((int32_t)min_v + max_v) / 2;
+
+        int32_t sU_sv = (int32_t)sU + v_offset;
+        int32_t sV_sv = (int32_t)sV + v_offset;
+        int32_t sW_sv = (int32_t)sW + v_offset;
+
+        // Scale up by 2/sqrt(3) (~1.1547) to utilize full DC bus voltage
+        // 37837 represents 1.1547 in Q15
+        sU_sv = (sU_sv * 37837) >> 15;
+        sV_sv = (sV_sv * 37837) >> 15;
+        sW_sv = (sW_sv * 37837) >> 15;
+
+        // Saturate to ensure int16 valid range (conservative)
+        if (sU_sv > 32767) sU_sv = 32767; else if (sU_sv < -32767) sU_sv = -32767;
+        if (sV_sv > 32767) sV_sv = 32767; else if (sV_sv < -32767) sV_sv = -32767;
+        if (sW_sv > 32767) sW_sv = 32767; else if (sW_sv < -32767) sW_sv = -32767;
+
+        dma_buffer_phase_a[start + i] = sine_to_cmp((int16_t)sU_sv, PWM_PERIOD_CYCLES, modulation_index_q15);
+        dma_buffer_phase_b[start + i] = sine_to_cmp((int16_t)sV_sv, PWM_PERIOD_CYCLES, modulation_index_q15);
+        dma_buffer_phase_c[start + i] = sine_to_cmp((int16_t)sW_sv, PWM_PERIOD_CYCLES, modulation_index_q15);
 
         phase_accumulator += phase_increment; // advance one PWM update step
     }
@@ -756,13 +784,13 @@ static void MX_HRTIM1_Init(void)
   {
     Error_Handler();
   }
-  pTimerCfg.ResetTrigger = HRTIM_TIMRESETTRIGGER_MASTER_CMP1;
+  pTimerCfg.ResetTrigger = HRTIM_TIMRESETTRIGGER_MASTER_PER;
   if (HAL_HRTIM_WaveformTimerConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_C, &pTimerCfg) != HAL_OK)
   {
     Error_Handler();
   }
   pTimerCfg.DelayedProtectionMode = HRTIM_TIMER_D_E_DELAYEDPROTECTION_DISABLED;
-  pTimerCfg.ResetTrigger = HRTIM_TIMRESETTRIGGER_MASTER_CMP2;
+  pTimerCfg.ResetTrigger = HRTIM_TIMRESETTRIGGER_MASTER_PER;
   if (HAL_HRTIM_WaveformTimerConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_D, &pTimerCfg) != HAL_OK)
   {
     Error_Handler();
@@ -1018,8 +1046,21 @@ void set_modulation_index(float modulation)
  */
 void Motor_Start(void)
 {
-  /* Start only Master. Slaves (A, C, D) are started by Master IRQ in stm32g4xx_it.c with phase shift */
-  HAL_HRTIM_WaveformCountStart_IT(&hhrtim1, HRTIM_TIMERID_MASTER);
+  /* Start all timers and outputs synchronously.
+     All slave timers (A, C, D) are configured to reset on Master Period, 
+     ensuring Center-Aligned synchronized PWM.
+  */
+  
+  // Enable Outputs
+  HAL_HRTIM_WaveformOutputStart(&hhrtim1, HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2 |
+                                          HRTIM_OUTPUT_TC1 | HRTIM_OUTPUT_TC2 |
+                                          HRTIM_OUTPUT_TD1 | HRTIM_OUTPUT_TD2);
+
+  // Start Counters (Master + Slaves)
+  HAL_HRTIM_WaveformCountStart(&hhrtim1, HRTIM_TIMERID_MASTER | 
+                                         HRTIM_TIMERID_TIMER_A | 
+                                         HRTIM_TIMERID_TIMER_C | 
+                                         HRTIM_TIMERID_TIMER_D);
 
   motor_ctrl.phase = 0.0f;
 }
