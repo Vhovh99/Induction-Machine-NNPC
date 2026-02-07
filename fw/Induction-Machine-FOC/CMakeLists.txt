@@ -49,6 +49,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/sine_op.c
     Core/Src/current_sense.c
     Core/Src/foc_math.c
+    Core/Src/relay_control.c
 )
 
 # Add include paths

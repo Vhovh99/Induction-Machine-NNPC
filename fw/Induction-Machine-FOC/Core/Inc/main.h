@@ -67,10 +67,32 @@ void Update_3Phase_PWM(float phase, float amplitude);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define RELAY10_Pin GPIO_PIN_13
+#define RELAY10_GPIO_Port GPIOC
+#define RELAY9_Pin GPIO_PIN_14
+#define RELAY9_GPIO_Port GPIOC
 #define RCC_OSC_IN_Pin GPIO_PIN_0
 #define RCC_OSC_IN_GPIO_Port GPIOF
 #define RCC_OSC_OUT_Pin GPIO_PIN_1
 #define RCC_OSC_OUT_GPIO_Port GPIOF
+#define RELAY4_Pin GPIO_PIN_1
+#define RELAY4_GPIO_Port GPIOB
+#define RELAY5_Pin GPIO_PIN_2
+#define RELAY5_GPIO_Port GPIOB
+#define RELAY1_Pin GPIO_PIN_10
+#define RELAY1_GPIO_Port GPIOA
+#define RELAY7_Pin GPIO_PIN_11
+#define RELAY7_GPIO_Port GPIOA
+#define RELAY8_Pin GPIO_PIN_12
+#define RELAY8_GPIO_Port GPIOA
+#define RELAY2_Pin GPIO_PIN_3
+#define RELAY2_GPIO_Port GPIOB
+#define RELAY3_Pin GPIO_PIN_5
+#define RELAY3_GPIO_Port GPIOB
+#define RELAY6_Pin GPIO_PIN_6
+#define RELAY6_GPIO_Port GPIOB
+#define RELAY11_Pin GPIO_PIN_7
+#define RELAY11_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
