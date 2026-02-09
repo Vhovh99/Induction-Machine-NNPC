@@ -28,6 +28,7 @@
 #include "sine_op.h"
 #include "foc_math.h"
 #include "current_sense.h"
+#include "encoder.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -51,6 +52,8 @@ typedef struct {
 
 #define ADC_RESOOLTUION  4095   // 2^12 - 1 for 12-bit ADC
 #define VREF_MV          3300   // millivolts
+#define ENCODER_PPR      2000U
+#define MOTOR_POLE_PAIRS 2U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -69,6 +72,8 @@ HRTIM_HandleTypeDef hhrtim1;
 DMA_HandleTypeDef hdma_hrtim1_a;
 DMA_HandleTypeDef hdma_hrtim1_c;
 DMA_HandleTypeDef hdma_hrtim1_d;
+
+TIM_HandleTypeDef htim2;
 
 /* USER CODE BEGIN PV */
 
@@ -100,6 +105,8 @@ static const int32_t svpwm_gain_q15 = 37837;
 // Modulation index in Q15 (0.0 to 1.1547 for SVPWM overmodulation)
 static int32_t modulation_index_q15 = (int32_t)(0.30f * 32767.0f);
 
+static Encoder_Handle_t encoder;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -111,6 +118,7 @@ static void MX_CORDIC_Init(void);
 static void MX_ADC3_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_ADC2_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 
 // Motor control function prototypes
@@ -225,6 +233,7 @@ int main(void)
 uint8_t button = 0;
 float freq = 0;
 float amp = 0;
+uint32_t encoder_last_tick = 0U;
 /* FOC Variables */
 CurSense_Data_t currents;
 Clarke_Out_t clarke;
@@ -257,7 +266,11 @@ float theta = 0.0f; // Rotor angle (electrical)
   MX_ADC3_Init();
   MX_ADC1_Init();
   MX_ADC2_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+  Encoder_Init(&encoder, &htim2, ENCODER_PPR);
+  Encoder_Start(&encoder);
+
   CurrentSense_Init();
   CurrentSense_Start();
 
@@ -299,6 +312,17 @@ float theta = 0.0f; // Rotor angle (electrical)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+    uint32_t now_ms = HAL_GetTick();
+    if (encoder_last_tick == 0U) {
+      encoder_last_tick = now_ms;
+    }
+    float encoder_dt = (now_ms - encoder_last_tick) * 0.001f;
+    if (encoder_dt > 0.0f) {
+      Encoder_Update(&encoder, encoder_dt);
+      encoder_last_tick = now_ms;
+      theta = Encoder_GetElectricalAngleRad(&encoder, MOTOR_POLE_PAIRS);
+    }
     
     /* Read Phase Currents */
     currents = CurrentSense_Read();
@@ -896,6 +920,66 @@ static void MX_HRTIM1_Init(void)
 }
 
 /**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_Encoder_InitTypeDef sConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIMEx_EncoderIndexConfigTypeDef sEncoderIndexConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 0;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 65535;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_FALLING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 15;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_FALLING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 15;
+  if (HAL_TIM_Encoder_Init(&htim2, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sEncoderIndexConfig.Polarity = TIM_ENCODERINDEX_POLARITY_NONINVERTED;
+  sEncoderIndexConfig.Prescaler = TIM_ENCODERINDEX_PRESCALER_DIV1;
+  sEncoderIndexConfig.Filter = 15;
+  sEncoderIndexConfig.FirstIndexEnable = DISABLE;
+  sEncoderIndexConfig.Position = TIM_ENCODERINDEX_POSITION_00;
+  sEncoderIndexConfig.Direction = TIM_ENCODERINDEX_DIRECTION_UP_DOWN;
+  if (HAL_TIMEx_ConfigEncoderIndex(&htim2, &sEncoderIndexConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
   * Enable DMA controller clock
   */
 static void MX_DMA_Init(void)
@@ -973,10 +1057,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOG, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PA0 PA1 PA4 PA5
-                           PA15 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_4|GPIO_PIN_5
-                          |GPIO_PIN_15;
+  /*Configure GPIO pins : PA4 PA5 */
+  GPIO_InitStruct.Pin = GPIO_PIN_4|GPIO_PIN_5;
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);

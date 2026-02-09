@@ -50,6 +50,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/current_sense.c
     Core/Src/foc_math.c
     Core/Src/relay_control.c
+    Core/Src/encoder.c
 )
 
 # Add include paths
