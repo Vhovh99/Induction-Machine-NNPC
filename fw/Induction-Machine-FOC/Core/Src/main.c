@@ -95,9 +95,10 @@ static uint32_t phase_increment = 0;
 
 /* Control Variables */
 static const uint32_t PWM_PERIOD_CYCLES = 4250;
-// Scale factor for SVPWM: includes modulation amplitude and 2/sqrt(3) scaling
-// Initial 30% amplitude: 0.3 * 1.1547 * 32767 = 11351
-static int32_t svpwm_amplitude_scale = 11351; 
+// Fixed SVPWM gain: 2/sqrt(3) = 1.1547 in Q15 (37837)
+static const int32_t svpwm_gain_q15 = 37837;
+// Modulation index in Q15 (0.0 to 1.1547 for SVPWM overmodulation)
+static int32_t modulation_index_q15 = (int32_t)(0.30f * 32767.0f);
 
 /* USER CODE END PV */
 
@@ -154,21 +155,20 @@ void fill_block(uint32_t start, uint32_t count)
         int32_t sV_sv = (int32_t)sV + v_offset;
         int32_t sW_sv = (int32_t)sW + v_offset;
 
-        // Apply Combined Scaling (SVPWM 1.1547 gain * Amplitude)
-        // svpwm_amplitude_scale is calculated in set_modulation_index()
-        sU_sv = (sU_sv * svpwm_amplitude_scale) >> 15;
-        sV_sv = (sV_sv * svpwm_amplitude_scale) >> 15;
-        sW_sv = (sW_sv * svpwm_amplitude_scale) >> 15;
+        // Apply fixed SVPWM gain (2/sqrt(3))
+        sU_sv = (sU_sv * svpwm_gain_q15) >> 15;
+        sV_sv = (sV_sv * svpwm_gain_q15) >> 15;
+        sW_sv = (sW_sv * svpwm_gain_q15) >> 15;
 
         // Saturate to ensure int16 valid range (conservative)
         if (sU_sv > 32767) sU_sv = 32767; else if (sU_sv < -32767) sU_sv = -32767;
         if (sV_sv > 32767) sV_sv = 32767; else if (sV_sv < -32767) sV_sv = -32767;
         if (sW_sv > 32767) sW_sv = 32767; else if (sW_sv < -32767) sW_sv = -32767;
 
-        // Pass 32767 (1.0) as modulation index since we already applied scaling
-        dma_buffer_phase_a[start + i] = sine_to_cmp((int16_t)sU_sv, PWM_PERIOD_CYCLES, 32767);
-        dma_buffer_phase_b[start + i] = sine_to_cmp((int16_t)sV_sv, PWM_PERIOD_CYCLES, 32767);
-        dma_buffer_phase_c[start + i] = sine_to_cmp((int16_t)sW_sv, PWM_PERIOD_CYCLES, 32767);
+        // Apply modulation index only in sine_to_cmp()
+        dma_buffer_phase_a[start + i] = sine_to_cmp((int16_t)sU_sv, PWM_PERIOD_CYCLES, modulation_index_q15);
+        dma_buffer_phase_b[start + i] = sine_to_cmp((int16_t)sV_sv, PWM_PERIOD_CYCLES, modulation_index_q15);
+        dma_buffer_phase_c[start + i] = sine_to_cmp((int16_t)sW_sv, PWM_PERIOD_CYCLES, modulation_index_q15);
 
         phase_accumulator += phase_increment; // advance one PWM update step
     }
@@ -285,8 +285,11 @@ float theta = 0.0f; // Rotor angle (electrical)
   HAL_DMA_Start_IT(&hdma_hrtim1_d, (uint32_t)dma_buffer_phase_c, (uint32_t)&HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_D].CMP1xR, BUFF_LEN);
 
   // Start HRTIM timers for 3-phase PWM generation
-  // Motor_Start();
-  Example_VF_Control_Ramp();
+  Motor_Start();
+  Motor_SetAmplitude(0.94);
+  Motor_SetFrequency(50);
+  
+  // Example_VF_Control_Ramp();
   
   /* USER CODE END 2 */
 
@@ -1036,17 +1039,16 @@ void set_fundamental_frequency(float f_out_hz)
 
 /**
  * @brief Set the modulation index (amplitude)
- * @param modulation: 0.0 to 1.0+ (SVPWM linear region ends at 1.0, overmodulation > 1.0)
+ * @param modulation: 0.0 to 1.1547 
  */
 void set_modulation_index(float modulation)
 {
-    // Removing 1.0 limit to allow overmodulation
-    // 1.0 corresponds to full linear region of SVPWM
-    if (modulation < 0.0f) modulation = 0.0f;
-    
-    // Scale factor = modulation * 2/sqrt(3)
-    // 37837 represents 1.1547 (2/sqrt3) in Q15
-    svpwm_amplitude_scale = (int32_t)(modulation * 37837.0f);
+  const float MAX_MODULATION = 1.1547f;
+
+  if (modulation < 0.0f) modulation = 0.0f;
+  if (modulation > MAX_MODULATION) modulation = MAX_MODULATION;
+
+  modulation_index_q15 = (int32_t)(modulation * 32767.0f);
 }
 
 /**

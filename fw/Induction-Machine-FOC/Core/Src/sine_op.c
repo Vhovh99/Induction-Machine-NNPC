@@ -87,7 +87,7 @@ int16_t get_sine_q15(uint32_t phase)
  * @param modulation_q15: Modulation index in Q15 format (0 to 32767)
  * @return uint32_t: Compare register value for PWM timer
  */
-uint32_t sine_to_cmp(int16_t s_q15, uint32_t period_cycles, int16_t modulation_q15)
+uint32_t sine_to_cmp(int16_t s_q15, uint32_t period_cycles, int32_t modulation_q15)
 {
     // 1. Scale sine by modulation index
     //    s_q15 [-32767, 32767] * m_q15 [0, 32767] = Q30 result
