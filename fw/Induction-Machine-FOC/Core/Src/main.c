@@ -739,8 +739,7 @@ static void MX_HRTIM1_Init(void)
   {
     Error_Handler();
   }
-  pTimerCfg.InterruptRequests = HRTIM_MASTER_IT_MCMP1|HRTIM_MASTER_IT_MCMP2
-                              |HRTIM_MASTER_IT_MREP;
+  pTimerCfg.InterruptRequests = HRTIM_MASTER_IT_NONE;
   pTimerCfg.DMARequests = HRTIM_MASTER_DMA_NONE;
   pTimerCfg.DMASrcAddress = 0x0000;
   pTimerCfg.DMADstAddress = 0x0000;
@@ -759,13 +758,8 @@ static void MX_HRTIM1_Init(void)
   {
     Error_Handler();
   }
-  pCompareCfg.CompareValue = 2833;
+  pCompareCfg.CompareValue = 4250;
   if (HAL_HRTIM_WaveformCompareConfig(&hhrtim1, HRTIM_TIMERINDEX_MASTER, HRTIM_COMPAREUNIT_1, &pCompareCfg) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  pCompareCfg.CompareValue = 5666;
-  if (HAL_HRTIM_WaveformCompareConfig(&hhrtim1, HRTIM_TIMERINDEX_MASTER, HRTIM_COMPAREUNIT_2, &pCompareCfg) != HAL_OK)
   {
     Error_Handler();
   }
@@ -805,13 +799,11 @@ static void MX_HRTIM1_Init(void)
   {
     Error_Handler();
   }
-  pTimerCfg.ResetTrigger = HRTIM_TIMRESETTRIGGER_MASTER_PER;
   if (HAL_HRTIM_WaveformTimerConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_C, &pTimerCfg) != HAL_OK)
   {
     Error_Handler();
   }
   pTimerCfg.DelayedProtectionMode = HRTIM_TIMER_D_E_DELAYEDPROTECTION_DISABLED;
-  pTimerCfg.ResetTrigger = HRTIM_TIMRESETTRIGGER_MASTER_PER;
   if (HAL_HRTIM_WaveformTimerConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_D, &pTimerCfg) != HAL_OK)
   {
     Error_Handler();
