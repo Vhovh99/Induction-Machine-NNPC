@@ -5,6 +5,9 @@
 extern ADC_HandleTypeDef hadc1;
 extern ADC_HandleTypeDef hadc2;
 
+CurSense_Data_t data = {0};
+
+
 /**
  * @brief  Convert measured ADC value to Current (Amps)
  */
@@ -40,19 +43,21 @@ void CurrentSense_Init(void)
 void CurrentSense_Start(void)
 {
     /* Start Injected Conversions with External Trigger (HRTIM) */
+    if (HAL_ADCEx_InjectedStart(&hadc2) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
     if (HAL_ADCEx_InjectedStart(&hadc1) != HAL_OK)
     {
         Error_Handler();
     }
-    // if (HAL_ADCEx_InjectedStart(&hadc2) != HAL_OK)
-    // {
-    //     Error_Handler();
-    // }
+
 }
 
 CurSense_Data_t CurrentSense_Read(void)
 {
-    CurSense_Data_t data = {0};
+    // CurSense_Data_t data = {0};
 
     // --------------------------------------------------------------------------
     // Retrieve Injected Conversion Results (registers updated by Hardware Trigger)

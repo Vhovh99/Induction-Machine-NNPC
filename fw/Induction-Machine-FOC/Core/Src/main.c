@@ -106,7 +106,6 @@ static const int32_t svpwm_gain_q15 = 37837;
 static int32_t modulation_index_q15 = (int32_t)(0.30f * 32767.0f);
 
 static Encoder_Handle_t encoder;
-
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
