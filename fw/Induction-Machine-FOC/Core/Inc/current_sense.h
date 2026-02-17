@@ -45,4 +45,12 @@ void CurrentSense_Start(void);
  */
 CurSense_Data_t CurrentSense_Read(void);
 
+/**
+ * @brief  Perform zero-current calibration
+ *         Call this when NO current is flowing through the motor phases
+ *         to measure and store the ADC offset values.
+ * @param  samples: Number of samples to average (default: 100)
+ */
+void CurrentSense_Calibrate(uint16_t samples);
+
 #endif /* CURRENT_SENSE_H */

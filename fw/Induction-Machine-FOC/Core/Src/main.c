@@ -181,6 +181,7 @@ void Process_Command(uint8_t *cmd_buffer)
     // R 1000  -> Set RPM (example)
     // S       -> Motor Start
     // X       -> Motor Stop
+    // C       -> Calibrate Current Sensors (motor must be OFF)
     
     // Parse float manually to avoid sscanf issues on some platforms
     char *ptr = cmd + 1;
@@ -213,6 +214,10 @@ void Process_Command(uint8_t *cmd_buffer)
         case 'X': // Stop
         case 'x':
             Motor_Stop();
+            break;
+        case 'C': // Calibrate Current Sensors
+        case 'c':
+            CurrentSense_Calibrate(100);
             break;
         default:
             break;
@@ -385,10 +390,18 @@ float theta = 0.0f; // Rotor angle (electrical)
   HAL_DMA_Start_IT(&hdma_hrtim1_c, (uint32_t)dma_buffer_phase_b, (uint32_t)&HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_C].CMP1xR, BUFF_LEN);
   HAL_DMA_Start_IT(&hdma_hrtim1_d, (uint32_t)dma_buffer_phase_c, (uint32_t)&HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_D].CMP1xR, BUFF_LEN);
 
-  // Start HRTIM timers for 3-phase PWM generation
-  Motor_Start();
-  Motor_SetAmplitude(0.94);
+  // Start HRTIM timers for 3-phase PWM generation (with ZERO amplitude initially)
+  Motor_SetAmplitude(0.0f);  // Set to zero FIRST
   Motor_SetFrequency(50);
+  Motor_Start();
+  
+  // IMPORTANT: Calibrate current sensors with NO current flowing
+  // HRTIM must be running to trigger ADC conversions, but amplitude is zero
+  HAL_Delay(50);  // Wait for ADC conversions to stabilize
+  CurrentSense_Calibrate(100);
+  
+  // Now set the actual operating amplitude
+  Motor_SetAmplitude(0.94);
   
   // Example_VF_Control_Ramp();
   /* USER CODE END 2 */
@@ -410,7 +423,7 @@ float theta = 0.0f; // Rotor angle (electrical)
 
     // Periodically send telemetry
     static uint32_t last_telemetry_ms = 0;
-    if (now_ms - last_telemetry_ms > 500) { // 10Hz
+    if (now_ms - last_telemetry_ms > 100) { // 10Hz
         char buffer[64];
         snprintf(buffer, sizeof(buffer), "SPD:%.2f CUR:%.2f,%.2f\r\n", 
                  Encoder_GetSpeedRpm(&encoder),
