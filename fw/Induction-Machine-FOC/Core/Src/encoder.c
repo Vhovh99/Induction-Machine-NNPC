@@ -25,6 +25,7 @@ void Encoder_Init(Encoder_Handle_t *enc, TIM_HandleTypeDef *htim, uint32_t ppr)
   enc->position_counts = 0;
   enc->speed_rad_per_sec = 0.0f;
   enc->speed_rpm = 0.0f;
+  enc->speed_rpm_filtered = 0.0f;
   enc->index_found = 0U;
 }
 
@@ -74,6 +75,19 @@ void Encoder_Update(Encoder_Handle_t *enc, float dt_sec)
   float rev_per_sec = counts_per_sec / (float)enc->counts_per_rev;
   enc->speed_rad_per_sec = rev_per_sec * ENCODER_TWO_PI;
   enc->speed_rpm = rev_per_sec * 60.0f;
+  
+  float raw_rpm = enc->speed_rpm;
+  const float MAX_PHYSICAL_RPM = 6000.0f;
+  
+  if (enc->speed_rpm > -MAX_PHYSICAL_RPM && enc->speed_rpm < MAX_PHYSICAL_RPM) {
+      // Valid sample
+      enc->speed_rpm_filtered = 0.9f * enc->speed_rpm_filtered + 0.1f * enc->speed_rpm;
+  } else {
+      // Invalid sample (spike), ignore.
+  }
+  
+  // Use filtered value for control/display
+  enc->speed_rad_per_sec = (enc->speed_rpm_filtered / 60.0f) * ENCODER_TWO_PI;
 }
 
 float Encoder_GetMechanicalAngleRad(const Encoder_Handle_t *enc)
@@ -117,7 +131,7 @@ float Encoder_GetSpeedRpm(const Encoder_Handle_t *enc)
     return 0.0f;
   }
 
-  return enc->speed_rpm;
+  return enc->speed_rpm_filtered;
 }
 
 int32_t Encoder_GetPositionCounts(const Encoder_Handle_t *enc)

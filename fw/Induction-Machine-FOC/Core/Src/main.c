@@ -29,6 +29,9 @@
 #include "foc_math.h"
 #include "current_sense.h"
 #include "encoder.h"
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -109,6 +112,14 @@ static const int32_t svpwm_gain_q15 = 37837;
 static int32_t modulation_index_q15 = (int32_t)(0.30f * 32767.0f);
 
 static Encoder_Handle_t encoder;
+
+/* UART Communication Buffer */
+#define UART_RX_BUFFER_SIZE 64
+static uint8_t uart_rx_buffer[UART_RX_BUFFER_SIZE];
+static uint8_t uart_rx_byte;
+static uint16_t uart_rx_index = 0;
+static uint8_t uart_new_cmd = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -138,6 +149,75 @@ void Example_VF_Control_Ramp(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART3)
+    {
+        if (uart_rx_byte == '\n' || uart_rx_byte == '\r') {
+             uart_rx_buffer[uart_rx_index] = '\0'; // Null terminate
+             uart_rx_index = 0;
+             uart_new_cmd = 1; // Signal main loop
+        } else {
+             if (uart_rx_index < UART_RX_BUFFER_SIZE - 1) {
+                 uart_rx_buffer[uart_rx_index++] = uart_rx_byte;
+             } else {
+                 // Buffer overflow, reset
+                 uart_rx_index = 0;
+             }
+        }
+        // Restart reception
+        HAL_UART_Receive_IT(&huart3, &uart_rx_byte, 1);
+    }
+}
+
+void Process_Command(uint8_t *cmd_buffer)
+{
+    char *cmd = (char*)cmd_buffer;
+    float val_f;
+    
+    // Command format: "CHAR VALUE"
+    // F 50.0  -> Set Frequency 50Hz
+    // A 0.5   -> Set Amplitude 0.5
+    // R 1000  -> Set RPM (example)
+    // S       -> Motor Start
+    // X       -> Motor Stop
+    
+    // Parse float manually to avoid sscanf issues on some platforms
+    char *ptr = cmd + 1;
+    val_f = strtof(ptr, NULL);
+
+    switch (cmd[0]) {
+        case 'F': // Frequency
+        case 'f':
+            if (val_f > 0.0f) {
+                Motor_SetFrequency(val_f);
+            }
+            break;
+        case 'A': // Amplitude
+        case 'a':
+            if (val_f >= 0.0f) {
+                Motor_SetAmplitude(val_f);
+            }
+            break;
+        case 'R': // RPM
+        case 'r':
+            if (val_f != 0.0f) {
+                float fe = (val_f * MOTOR_POLE_PAIRS) / 60.0f;
+                Motor_SetFrequency(fe);
+            }
+            break;
+        case 'S': // Start
+        case 's':
+            Motor_Start();
+            break;
+        case 'X': // Stop
+        case 'x':
+            Motor_Stop();
+            break;
+        default:
+            break;
+    }
+}
 
 void fill_block(uint32_t start, uint32_t count)
 {
@@ -275,6 +355,7 @@ float theta = 0.0f; // Rotor angle (electrical)
   MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start_IT(&htim6);
+  HAL_UART_Receive_IT(&huart3, &uart_rx_byte, 1);
   Encoder_Init(&encoder, &htim2, ENCODER_PPR);
   Encoder_Start(&encoder);
 
@@ -319,6 +400,24 @@ float theta = 0.0f; // Rotor angle (electrical)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+    uint32_t now_ms = HAL_GetTick();
+
+    if (uart_new_cmd) {
+        Process_Command(uart_rx_buffer);
+        uart_new_cmd = 0;
+    }
+
+    // Periodically send telemetry
+    static uint32_t last_telemetry_ms = 0;
+    if (now_ms - last_telemetry_ms > 500) { // 10Hz
+        char buffer[64];
+        snprintf(buffer, sizeof(buffer), "SPD:%.2f CUR:%.2f,%.2f\r\n", 
+                 Encoder_GetSpeedRpm(&encoder),
+                 currents.Ia, currents.Ib);
+        HAL_UART_Transmit(&huart3, (uint8_t*)buffer, strlen(buffer), 500);
+        last_telemetry_ms = now_ms;
+    }
 
     // Encoder position is updated in TIM6 interrupt at 1kHz
     theta = Encoder_GetElectricalAngleRad(&encoder, MOTOR_POLE_PAIRS);

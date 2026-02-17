@@ -12,6 +12,7 @@ typedef struct {
   int32_t position_counts;
   float speed_rad_per_sec;
   float speed_rpm;
+  float speed_rpm_filtered;
   uint8_t index_found;
 } Encoder_Handle_t;
 
