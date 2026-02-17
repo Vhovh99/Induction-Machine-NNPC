@@ -62,10 +62,9 @@ void Encoder_Update(Encoder_Handle_t *enc, float dt_sec)
 
   if (__HAL_TIM_GET_FLAG(enc->htim, TIM_FLAG_IDX) != RESET) {
     __HAL_TIM_CLEAR_FLAG(enc->htim, TIM_FLAG_IDX);
-    enc->position_counts = 0;
-    enc->last_count = count;
+    // enc->position_counts = 0; // Don't reset position for now to avoid jump
     enc->index_found = 1U;
-    delta = 0;
+    // delta = 0; // Don't zero delta, it breaks speed estimation
   }
 
   enc->position_counts += delta;
