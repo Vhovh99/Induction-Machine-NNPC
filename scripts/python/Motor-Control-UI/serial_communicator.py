@@ -105,6 +105,30 @@ class SerialCommunicator:
     def set_rpm(self, rpm: float) -> bool:
         """Set the RPM."""
         return self.send_command(f"R {rpm}")
+
+    def set_mode_vf(self) -> bool:
+        """Switch to V/F control mode."""
+        return self.send_command("M V")
+
+    def set_mode_foc(self) -> bool:
+        """Switch to FOC control mode."""
+        return self.send_command("M F")
+
+    def set_id_current(self, current: float) -> bool:
+        """Set Id (flux) reference current (A)."""
+        return self.send_command(f"I {current}")
+
+    def set_iq_current(self, current: float) -> bool:
+        """Set Iq (torque) reference current (A)."""
+        return self.send_command(f"Q {current}")
+
+    def set_id_pid(self, kp: float, ki: float, kd: float) -> bool:
+        """Tune Id PID controller."""
+        return self.send_command(f"P {kp} {ki} {kd}")
+
+    def set_iq_pid(self, kp: float, ki: float, kd: float) -> bool:
+        """Tune Iq PID controller."""
+        return self.send_command(f"T {kp} {ki} {kd}")
     
     def start_motor(self) -> bool:
         """Start the motor."""
@@ -135,28 +159,46 @@ class SerialCommunicator:
     def _parse_telemetry(self, line: str):
         """Parse telemetry data from the motor controller."""
         try:
-            # Format: SPD:1495.20 CUR:0.45,-0.42
+            # Format: IDX:1 SPD:-1670.95 CUR:13.21,13.25 CLA:13.21,22.93 PARK:26.44,1.01 TH_M:3.65 TH_E:1.01
             data = {}
             
             # Remove any extra whitespace
             line = ' '.join(line.split())
-            
-            # Find and extract SPD
-            if 'SPD:' in line:
-                spd_start = line.index('SPD:') + 4
-                spd_str = line[spd_start:].split()[0]
-                data['speed'] = float(spd_str)
-                print(f"[DEBUG] Parsed speed: {data['speed']}")
-            
-            # Find and extract CUR
-            if 'CUR:' in line:
-                cur_start = line.index('CUR:') + 4
-                cur_str = line[cur_start:]
-                currents = cur_str.split(',')
-                if len(currents) >= 2:
-                    data['ia'] = float(currents[0].strip())
-                    data['ib'] = float(currents[1].strip())
-                    print(f"[DEBUG] Parsed currents: Ia={data['ia']}, Ib={data['ib']}")
+
+            tokens = line.split()
+            for token in tokens:
+                if token.startswith('IDX:'):
+                    data['index'] = int(token.split(':', 1)[1])
+                elif token.startswith('SPD:'):
+                    data['speed'] = float(token.split(':-', 1)[1])
+                    print(f"[DEBUG] Parsed speed: {data['speed']}")
+                elif token.startswith('CUR:'):
+                    values = token.split(':', 1)[1].split(',')
+                    if len(values) >= 2:
+                        data['ia'] = float(values[0].strip())
+                        data['ib'] = float(values[1].strip())
+                        print(f"[DEBUG] Parsed currents: Ia={data['ia']}, Ib={data['ib']}")
+                elif token.startswith('CLA:'):
+                    values = token.split(':', 1)[1].split(',')
+                    if len(values) >= 2:
+                        data['i_alpha'] = float(values[0].strip())
+                        data['i_beta'] = float(values[1].strip())
+                        print(f"[DEBUG] Parsed clarke: Ialpha={data['i_alpha']}, Ibeta={data['i_beta']}")
+                elif token.startswith('PARK:'):
+                    values = token.split(':', 1)[1].split(',')
+                    if len(values) >= 2:
+                        data['id'] = float(values[0].strip())
+                        data['iq'] = float(values[1].strip())
+                        print(f"[DEBUG] Parsed park: Id={data['id']}, Iq={data['iq']}")
+                elif token.startswith('TH_M:'):
+                    data['theta_mechanical'] = float(token.split(':', 1)[1])
+                    print(f"[DEBUG] Parsed theta_mechanical: {data['theta_mechanical']}")
+                elif token.startswith('TH_E:'):
+                    data['theta_electrical'] = float(token.split(':', 1)[1])
+                    print(f"[DEBUG] Parsed theta_electrical: {data['theta_electrical']}")
+                elif token.startswith('THETA:'):  # Keep backward compatibility
+                    data['theta_electrical'] = float(token.split(':', 1)[1])
+                    print(f"[DEBUG] Parsed theta (legacy): {data['theta_electrical']}")
             
             # Add timestamp
             data['timestamp'] = time.time()

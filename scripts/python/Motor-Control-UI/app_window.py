@@ -118,6 +118,10 @@ class MotorControlUI(QMainWindow):
         # Control Group
         control_group = self._create_control_group()
         layout.addWidget(control_group)
+
+        # FOC Control Group
+        foc_group = self._create_foc_control_group()
+        layout.addWidget(foc_group)
         
         # Status Group
         self.status_widget = self._create_status_group()
@@ -235,6 +239,88 @@ class MotorControlUI(QMainWindow):
         
         group.setLayout(layout)
         return group
+
+    def _create_foc_control_group(self) -> QGroupBox:
+        """Create FOC control group."""
+        group = QGroupBox("FOC Control")
+        layout = QFormLayout()
+
+        # Mode selection
+        mode_layout = QHBoxLayout()
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["V/F", "FOC"])
+        mode_apply_button = QPushButton("Set")
+        mode_apply_button.clicked.connect(self._set_mode)
+        mode_layout.addWidget(self.mode_combo)
+        mode_layout.addWidget(mode_apply_button)
+        layout.addRow("Mode:", mode_layout)
+
+        # Id reference
+        self.id_spin = QDoubleSpinBox()
+        self.id_spin.setRange(-50.0, 50.0)
+        self.id_spin.setDecimals(3)
+        self.id_spin.setSingleStep(0.1)
+        id_apply_button = QPushButton("Set")
+        id_apply_button.clicked.connect(self._set_id_current)
+        id_layout = QHBoxLayout()
+        id_layout.addWidget(self.id_spin)
+        id_layout.addWidget(id_apply_button)
+        layout.addRow("Id Ref (A):", id_layout)
+
+        # Iq reference
+        self.iq_spin = QDoubleSpinBox()
+        self.iq_spin.setRange(-50.0, 50.0)
+        self.iq_spin.setDecimals(3)
+        self.iq_spin.setSingleStep(0.1)
+        iq_apply_button = QPushButton("Set")
+        iq_apply_button.clicked.connect(self._set_iq_current)
+        iq_layout = QHBoxLayout()
+        iq_layout.addWidget(self.iq_spin)
+        iq_layout.addWidget(iq_apply_button)
+        layout.addRow("Iq Ref (A):", iq_layout)
+
+        # Id PID tuning
+        self.id_kp_spin = QDoubleSpinBox()
+        self.id_ki_spin = QDoubleSpinBox()
+        self.id_kd_spin = QDoubleSpinBox()
+        for spin in (self.id_kp_spin, self.id_ki_spin, self.id_kd_spin):
+            spin.setRange(0.0, 1000.0)
+            spin.setDecimals(4)
+            spin.setSingleStep(0.1)
+        id_pid_layout = QHBoxLayout()
+        id_pid_layout.addWidget(QLabel("Kp"))
+        id_pid_layout.addWidget(self.id_kp_spin)
+        id_pid_layout.addWidget(QLabel("Ki"))
+        id_pid_layout.addWidget(self.id_ki_spin)
+        id_pid_layout.addWidget(QLabel("Kd"))
+        id_pid_layout.addWidget(self.id_kd_spin)
+        id_pid_button = QPushButton("Set")
+        id_pid_button.clicked.connect(self._set_id_pid)
+        id_pid_layout.addWidget(id_pid_button)
+        layout.addRow("Id PID:", id_pid_layout)
+
+        # Iq PID tuning
+        self.iq_kp_spin = QDoubleSpinBox()
+        self.iq_ki_spin = QDoubleSpinBox()
+        self.iq_kd_spin = QDoubleSpinBox()
+        for spin in (self.iq_kp_spin, self.iq_ki_spin, self.iq_kd_spin):
+            spin.setRange(0.0, 1000.0)
+            spin.setDecimals(4)
+            spin.setSingleStep(0.1)
+        iq_pid_layout = QHBoxLayout()
+        iq_pid_layout.addWidget(QLabel("Kp"))
+        iq_pid_layout.addWidget(self.iq_kp_spin)
+        iq_pid_layout.addWidget(QLabel("Ki"))
+        iq_pid_layout.addWidget(self.iq_ki_spin)
+        iq_pid_layout.addWidget(QLabel("Kd"))
+        iq_pid_layout.addWidget(self.iq_kd_spin)
+        iq_pid_button = QPushButton("Set")
+        iq_pid_button.clicked.connect(self._set_iq_pid)
+        iq_pid_layout.addWidget(iq_pid_button)
+        layout.addRow("Iq PID:", iq_pid_layout)
+
+        group.setLayout(layout)
+        return group
     
     def _create_status_group(self) -> QGroupBox:
         """Create status display group."""
@@ -300,6 +386,26 @@ class MotorControlUI(QMainWindow):
         self.current_canvas = FigureCanvas(Figure(figsize=(8, 3)))
         self.current_ax = self.current_canvas.figure.add_subplot(111)
         tabs.addTab(self.current_canvas, "Phase Currents (A)")
+
+        # Clarke currents plot
+        self.clarke_canvas = FigureCanvas(Figure(figsize=(8, 3)))
+        self.clarke_ax = self.clarke_canvas.figure.add_subplot(111)
+        tabs.addTab(self.clarke_canvas, "Clarke (A)")
+
+        # Park currents plot
+        self.park_canvas = FigureCanvas(Figure(figsize=(8, 3)))
+        self.park_ax = self.park_canvas.figure.add_subplot(111)
+        tabs.addTab(self.park_canvas, "Park (A)")
+
+        # Theta mechanical plot
+        self.theta_mech_canvas = FigureCanvas(Figure(figsize=(8, 3)))
+        self.theta_mech_ax = self.theta_mech_canvas.figure.add_subplot(111)
+        tabs.addTab(self.theta_mech_canvas, "Theta Mech (rad)")
+
+        # Theta electrical plot
+        self.theta_elec_canvas = FigureCanvas(Figure(figsize=(8, 3)))
+        self.theta_elec_ax = self.theta_elec_canvas.figure.add_subplot(111)
+        tabs.addTab(self.theta_elec_canvas, "Theta Elec (rad)")
         
         layout.addWidget(tabs)
         return panel
@@ -381,6 +487,55 @@ class MotorControlUI(QMainWindow):
             self._add_log_message(f"Target RPM set to {rpm}")
         else:
             self._add_log_message("ERROR: Failed to set RPM")
+
+    def _set_mode(self):
+        """Set control mode (V/F or FOC)."""
+        mode = self.mode_combo.currentText()
+        if mode == "FOC":
+            ok = self.serial_comm.set_mode_foc()
+        else:
+            ok = self.serial_comm.set_mode_vf()
+
+        if ok:
+            self._add_log_message(f"Control mode set to {mode}")
+        else:
+            self._add_log_message("ERROR: Failed to set control mode")
+
+    def _set_id_current(self):
+        """Set Id reference current."""
+        id_ref = self.id_spin.value()
+        if self.serial_comm.set_id_current(id_ref):
+            self._add_log_message(f"Id reference set to {id_ref} A")
+        else:
+            self._add_log_message("ERROR: Failed to set Id reference")
+
+    def _set_iq_current(self):
+        """Set Iq reference current."""
+        iq_ref = self.iq_spin.value()
+        if self.serial_comm.set_iq_current(iq_ref):
+            self._add_log_message(f"Iq reference set to {iq_ref} A")
+        else:
+            self._add_log_message("ERROR: Failed to set Iq reference")
+
+    def _set_id_pid(self):
+        """Tune Id PID controller."""
+        kp = self.id_kp_spin.value()
+        ki = self.id_ki_spin.value()
+        kd = self.id_kd_spin.value()
+        if self.serial_comm.set_id_pid(kp, ki, kd):
+            self._add_log_message(f"Id PID set: Kp={kp}, Ki={ki}, Kd={kd}")
+        else:
+            self._add_log_message("ERROR: Failed to set Id PID")
+
+    def _set_iq_pid(self):
+        """Tune Iq PID controller."""
+        kp = self.iq_kp_spin.value()
+        ki = self.iq_ki_spin.value()
+        kd = self.iq_kd_spin.value()
+        if self.serial_comm.set_iq_pid(kp, ki, kd):
+            self._add_log_message(f"Iq PID set: Kp={kp}, Ki={ki}, Kd={kd}")
+        else:
+            self._add_log_message("ERROR: Failed to set Iq PID")
     
     def _start_motor(self):
         """Start the motor."""
@@ -414,7 +569,17 @@ class MotorControlUI(QMainWindow):
     def _on_data_received(self, data: dict):
         """Handle received telemetry data."""
         if 'speed' in data and 'ia' in data and 'ib' in data:
-            self.data_buffer.add_telemetry(data['speed'], data['ia'], data['ib'])
+            self.data_buffer.add_telemetry(
+                data['speed'],
+                data['ia'],
+                data['ib'],
+                i_alpha=data.get('i_alpha'),
+                i_beta=data.get('i_beta'),
+                id_current=data.get('id'),
+                iq_current=data.get('iq'),
+                theta_mechanical=data.get('theta_mechanical'),
+                theta_electrical=data.get('theta_electrical'),
+            )
             self._update_status_display(data)
     
     def _update_status_display(self, data: dict):
@@ -435,6 +600,10 @@ class MotorControlUI(QMainWindow):
             self._plot_speed(plot_data)
             self._plot_torque(plot_data)
             self._plot_current(plot_data)
+            self._plot_clarke(plot_data)
+            self._plot_park(plot_data)
+            self._plot_theta_mechanical(plot_data)
+            self._plot_theta_electrical(plot_data)
     
     def _plot_speed(self, data: dict):
         """Plot speed data."""
@@ -492,6 +661,78 @@ class MotorControlUI(QMainWindow):
         self.current_ax.grid(True, alpha=0.3)
         
         self.current_canvas.draw()
+
+    def _plot_clarke(self, data: dict):
+        """Plot Clarke (alpha/beta) currents."""
+        self.clarke_ax.clear()
+
+        time = data['time']
+        i_alpha = data['current_alpha']
+        i_beta = data['current_beta']
+
+        self.clarke_ax.plot(time, i_alpha, 'b-', label='Ialpha', linewidth=1.5)
+        self.clarke_ax.plot(time, i_beta, 'r-', label='Ibeta', linewidth=1.5)
+
+        self.clarke_ax.set_xlabel('Time (s)')
+        self.clarke_ax.set_ylabel('Current (A)')
+        self.clarke_ax.set_title('Clarke Currents')
+        self.clarke_ax.legend(loc='best')
+        self.clarke_ax.grid(True, alpha=0.3)
+
+        self.clarke_canvas.draw()
+
+    def _plot_park(self, data: dict):
+        """Plot Park (d/q) currents."""
+        self.park_ax.clear()
+
+        time = data['time']
+        i_d = data['current_id']
+        i_q = data['current_iq']
+
+        self.park_ax.plot(time, i_d, 'g-', label='Id', linewidth=1.5)
+        self.park_ax.plot(time, i_q, 'm-', label='Iq', linewidth=1.5)
+
+        self.park_ax.set_xlabel('Time (s)')
+        self.park_ax.set_ylabel('Current (A)')
+        self.park_ax.set_title('Park Currents')
+        self.park_ax.legend(loc='best')
+        self.park_ax.grid(True, alpha=0.3)
+
+        self.park_canvas.draw()
+
+    def _plot_theta_mechanical(self, data: dict):
+        """Plot mechanical angle (theta_m)."""
+        self.theta_mech_ax.clear()
+
+        time = data['time']
+        theta_m = data['theta_mechanical']
+
+        self.theta_mech_ax.plot(time, theta_m, 'b-', label='Theta Mechanical', linewidth=1.5)
+
+        self.theta_mech_ax.set_xlabel('Time (s)')
+        self.theta_mech_ax.set_ylabel('Theta (rad)')
+        self.theta_mech_ax.set_title('Mechanical Angle')
+        self.theta_mech_ax.legend(loc='best')
+        self.theta_mech_ax.grid(True, alpha=0.3)
+
+        self.theta_mech_canvas.draw()
+
+    def _plot_theta_electrical(self, data: dict):
+        """Plot electrical angle (theta_e)."""
+        self.theta_elec_ax.clear()
+
+        time = data['time']
+        theta_e = data['theta_electrical']
+
+        self.theta_elec_ax.plot(time, theta_e, 'r-', label='Theta Electrical', linewidth=1.5)
+
+        self.theta_elec_ax.set_xlabel('Time (s)')
+        self.theta_elec_ax.set_ylabel('Theta (rad)')
+        self.theta_elec_ax.set_title('Electrical Angle')
+        self.theta_elec_ax.legend(loc='best')
+        self.theta_elec_ax.grid(True, alpha=0.3)
+
+        self.theta_elec_canvas.draw()
     
     def _on_error(self, message: str):
         """Handle error messages."""

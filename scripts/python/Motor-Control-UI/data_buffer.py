@@ -17,6 +17,12 @@ class TelemetryBuffer:
         self.speeds_reference = deque(maxlen=buffer_size)
         self.currents_ia = deque(maxlen=buffer_size)
         self.currents_ib = deque(maxlen=buffer_size)
+        self.currents_alpha = deque(maxlen=buffer_size)
+        self.currents_beta = deque(maxlen=buffer_size)
+        self.currents_id = deque(maxlen=buffer_size)
+        self.currents_iq = deque(maxlen=buffer_size)
+        self.thetas_mechanical = deque(maxlen=buffer_size)
+        self.thetas_electrical = deque(maxlen=buffer_size)
         self.torques_applied = deque(maxlen=buffer_size)
         self.torques_electromagnetic = deque(maxlen=buffer_size)
         
@@ -29,14 +35,24 @@ class TelemetryBuffer:
         self.last_speed = 0.0
         self.last_timestamp = time.time()
     
-    def add_telemetry(self, speed: float, ia: float, ib: float):
+    def add_telemetry(
+        self,
+        speed: float,
+        ia: float,
+        ib: float,
+        i_alpha: Optional[float] = None,
+        i_beta: Optional[float] = None,
+        id_current: Optional[float] = None,
+        iq_current: Optional[float] = None,
+        theta_mechanical: Optional[float] = None,
+        theta_electrical: Optional[float] = None,
+    ):
         """Add a new telemetry sample."""
         current_time = time.time()
         dt = current_time - self.last_timestamp
         
         self.timestamps.append(current_time)
-        # Ensure speed is never negative (absolute value for display)
-        self.speeds.append(abs(speed))
+        self.speeds.append(speed)
         
         # Use the reference RPM directly if set, otherwise calculate from frequency
         if self.reference_rpm > 0:
@@ -50,6 +66,12 @@ class TelemetryBuffer:
         # Store currents
         self.currents_ia.append(ia)
         self.currents_ib.append(ib)
+        self.currents_alpha.append(np.nan if i_alpha is None else i_alpha)
+        self.currents_beta.append(np.nan if i_beta is None else i_beta)
+        self.currents_id.append(np.nan if id_current is None else id_current)
+        self.currents_iq.append(np.nan if iq_current is None else iq_current)
+        self.thetas_mechanical.append(np.nan if theta_mechanical is None else theta_mechanical)
+        self.thetas_electrical.append(np.nan if theta_electrical is None else theta_electrical)
         
         # Calculate torques
         applied_torque = self._calculate_applied_torque(ia, ib)
@@ -118,6 +140,12 @@ class TelemetryBuffer:
                 'torque_electromagnetic': np.array([]),
                 'current_ia': np.array([]),
                 'current_ib': np.array([]),
+                'current_alpha': np.array([]),
+                'current_beta': np.array([]),
+                'current_id': np.array([]),
+                'current_iq': np.array([]),
+                'theta_mechanical': np.array([]),
+                'theta_electrical': np.array([]),
             }
         
         # Create time array relative to start (for better x-axis readability)
@@ -135,6 +163,12 @@ class TelemetryBuffer:
             'torque_electromagnetic': np.array(list(self.torques_electromagnetic)),
             'current_ia': np.array(list(self.currents_ia)),
             'current_ib': np.array(list(self.currents_ib)),
+            'current_alpha': np.array(list(self.currents_alpha)),
+            'current_beta': np.array(list(self.currents_beta)),
+            'current_id': np.array(list(self.currents_id)),
+            'current_iq': np.array(list(self.currents_iq)),
+            'theta_mechanical': np.array(list(self.thetas_mechanical)),
+            'theta_electrical': np.array(list(self.thetas_electrical)),
         }
     
     def get_latest_values(self) -> dict:
@@ -146,6 +180,12 @@ class TelemetryBuffer:
                 'ib': 0.0,
                 'torque_applied': 0.0,
                 'torque_electromagnetic': 0.0,
+                'i_alpha': 0.0,
+                'i_beta': 0.0,
+                'id': 0.0,
+                'iq': 0.0,
+                'theta_mechanical': 0.0,
+                'theta_electrical': 0.0,
             }
         
         return {
@@ -154,6 +194,12 @@ class TelemetryBuffer:
             'ib': self.currents_ib[-1],
             'torque_applied': self.torques_applied[-1],
             'torque_electromagnetic': self.torques_electromagnetic[-1],
+            'i_alpha': self.currents_alpha[-1],
+            'i_beta': self.currents_beta[-1],
+            'id': self.currents_id[-1],
+            'iq': self.currents_iq[-1],
+            'theta_mechanical': self.thetas_mechanical[-1],
+            'theta_electrical': self.thetas_electrical[-1],
         }
     
     def clear(self):
@@ -163,5 +209,11 @@ class TelemetryBuffer:
         self.speeds_reference.clear()
         self.currents_ia.clear()
         self.currents_ib.clear()
+        self.currents_alpha.clear()
+        self.currents_beta.clear()
+        self.currents_id.clear()
+        self.currents_iq.clear()
+        self.thetas_mechanical.clear()
+        self.thetas_electrical.clear()
         self.torques_applied.clear()
         self.torques_electromagnetic.clear()
