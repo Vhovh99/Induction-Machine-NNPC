@@ -19,9 +19,10 @@ typedef struct {
  * Assumes balanced system where Ia + Ib + Ic = 0, so Ic is not needed.
  * @param Ia Phase A current
  * @param Ib Phase B current
+ * @param Ic Phase C current
  * @return Clarke_Out_t Structure containing alpha and beta components
  */
-Clarke_Out_t Clarke_Transform(float Ia, float Ib);
+Clarke_Out_t Clarke_Transform(float Ia, float Ib, float Ic);
 
 /**
  * @brief Park Transformation

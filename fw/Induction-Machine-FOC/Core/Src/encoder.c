@@ -1,4 +1,5 @@
 #include "encoder.h"
+#include <math.h>
 
 #define ENCODER_QE_MULT 4U
 #define ENCODER_TWO_PI 6.28318530718f
@@ -27,6 +28,8 @@ void Encoder_Init(Encoder_Handle_t *enc, TIM_HandleTypeDef *htim, uint32_t ppr)
   enc->speed_rpm = 0.0f;
   enc->speed_rpm_filtered = 0.0f;
   enc->index_found = 0U;
+  enc->index_offset_counts = 0;
+  enc->position_zeroed = 0;
 }
 
 void Encoder_Start(Encoder_Handle_t *enc)
@@ -52,31 +55,53 @@ void Encoder_Update(Encoder_Handle_t *enc, float dt_sec)
   }
 
   uint16_t count = (uint16_t)__HAL_TIM_GET_COUNTER(enc->htim);
-  int32_t delta = (int32_t)count - (int32_t)enc->last_count;
   uint32_t max_count = (uint32_t)__HAL_TIM_GET_AUTORELOAD(enc->htim) + 1U;
+  int32_t delta = 0;
+  uint8_t index_event = (__HAL_TIM_GET_FLAG(enc->htim, TIM_FLAG_IDX) != RESET) ? 1U : 0U;
 
-  if (delta > (int32_t)(max_count / 2U)) {
-    delta -= (int32_t)max_count;
-  } else if (delta < -((int32_t)max_count / 2U)) {
-    delta += (int32_t)max_count;
-  }
-
-  if (__HAL_TIM_GET_FLAG(enc->htim, TIM_FLAG_IDX) != RESET) {
+  if (index_event != 0U) {
     __HAL_TIM_CLEAR_FLAG(enc->htim, TIM_FLAG_IDX);
-    // enc->position_counts = 0; // Don't reset position for now to avoid jump
-    enc->index_found = 1U;
-    // delta = 0; // Don't zero delta, it breaks speed estimation
   }
 
-  enc->position_counts += delta;
-  enc->last_count = count;
+  if ((index_event != 0U) && (enc->index_found == 0U)) {
+    // TIM index mode resets CNT asynchronously; rebase software state at first index.
+    int32_t counts_from_index = (int32_t)count;
+    if (counts_from_index > (int32_t)(max_count / 2U)) {
+      counts_from_index -= (int32_t)max_count;
+    }
+
+    enc->position_counts = counts_from_index;
+    enc->index_offset_counts = 0;
+    enc->position_zeroed = enc->position_counts;
+    enc->index_found = 1U;
+    enc->last_count = count;
+    delta = 0;
+  } else {
+    delta = (int32_t)count - (int32_t)enc->last_count;
+
+    if (delta > (int32_t)(max_count / 2)) {
+      delta -= (int32_t)max_count;
+    } else if (delta < -((int32_t)max_count / 2)) {
+      delta += (int32_t)max_count;
+    }
+
+    enc->position_counts += delta;
+    enc->last_count = count;
+
+    if (index_event != 0U) {
+      // If first-index mode is disabled, keep zero lock deterministic.
+      enc->index_offset_counts = enc->position_counts;
+      enc->index_found = 1U;
+    }
+
+    enc->position_zeroed = enc->position_counts - enc->index_offset_counts;
+  }
 
   float counts_per_sec = (float)delta / dt_sec;
   float rev_per_sec = counts_per_sec / (float)enc->counts_per_rev;
-  enc->speed_rad_per_sec = rev_per_sec * ENCODER_TWO_PI;
-  enc->speed_rpm = rev_per_sec * 60.0f;
-  
-  float raw_rpm = enc->speed_rpm;
+  enc->speed_rad_per_sec = fabs(rev_per_sec) * ENCODER_TWO_PI;
+  enc->speed_rpm = fabs(rev_per_sec) * 60.0f;
+
   const float MAX_PHYSICAL_RPM = 6000.0f;
   
   if (enc->speed_rpm > -MAX_PHYSICAL_RPM && enc->speed_rpm < MAX_PHYSICAL_RPM) {
@@ -96,7 +121,7 @@ float Encoder_GetMechanicalAngleRad(const Encoder_Handle_t *enc)
     return 0.0f;
   }
 
-  uint32_t mod = Encoder_Modulo(enc->position_counts, enc->counts_per_rev);
+  uint32_t mod = Encoder_Modulo(enc->position_zeroed, enc->counts_per_rev);
   return ((float)mod / (float)enc->counts_per_rev) * ENCODER_TWO_PI;
 }
 
@@ -140,7 +165,7 @@ int32_t Encoder_GetPositionCounts(const Encoder_Handle_t *enc)
     return 0;
   }
 
-  return enc->position_counts;
+  return enc->position_zeroed;
 }
 
 uint8_t Encoder_HasIndex(const Encoder_Handle_t *enc)
@@ -163,5 +188,6 @@ void Encoder_ResetPosition(Encoder_Handle_t *enc, int32_t counts)
 
   __HAL_TIM_SET_COUNTER(enc->htim, counter);
   enc->position_counts = counts;
+  enc->position_zeroed = enc->position_counts - enc->index_offset_counts;
   enc->last_count = (uint16_t)counter;
 }

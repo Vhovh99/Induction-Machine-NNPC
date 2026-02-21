@@ -22,16 +22,24 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "stm32_hal_legacy.h"
+#include "stm32g4xx_hal.h"
+#include "stm32g4xx_hal_adc_ex.h"
+#include "stm32g4xx_hal_gpio.h"
 #include "stm32g4xx_hal_hrtim.h"
 #include <complex.h>
 #include <stdint.h>
 #include "sine_op.h"
 #include "foc_math.h"
+#include "foc_control.h"
 #include "current_sense.h"
 #include "encoder.h"
+#include "stm32g4xx_hal_tim.h"
+#include "relay_control.h"
+#include "svpwm.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -46,6 +54,32 @@ typedef struct {
   float phase_step;     // Phase increment per PWM cycle
   uint16_t period;      // PWM period in timer ticks
 } Motor_Control_t;
+
+/**
+ * @brief Control mode enumeration
+ */
+typedef enum {
+  CONTROL_VF = 0,      // Voltage/Frequency control (open-loop)
+  CONTROL_FOC = 1      // Field Oriented Control (closed-loop current)
+} Control_Mode_t;
+
+typedef enum {
+  FOC_BRINGUP_IDLE = 0,
+  FOC_BRINGUP_PREPARE,
+  FOC_BRINGUP_RAMP_ID,
+  FOC_BRINGUP_HOLD_ID,
+  FOC_BRINGUP_RAMP_IQ,
+  FOC_BRINGUP_HOLD_RUN,
+  FOC_BRINGUP_RAMP_DOWN
+} FOC_Bringup_State_t;
+
+typedef enum {
+  FOC_AUTOCAL_IDLE = 0,
+  FOC_AUTOCAL_PREPARE_POINT,
+  FOC_AUTOCAL_SETTLE_POINT,
+  FOC_AUTOCAL_MEASURE_POINT,
+  FOC_AUTOCAL_RAMP_DOWN
+} FOC_Autocal_State_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -80,6 +114,7 @@ TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim6;
 
 UART_HandleTypeDef huart3;
+DMA_HandleTypeDef hdma_usart3_tx;
 
 /* USER CODE BEGIN PV */
 
@@ -106,10 +141,28 @@ static uint32_t phase_increment = 0;
 
 /* Control Variables */
 static const uint32_t PWM_PERIOD_CYCLES = 4250;
+static const float PWM_FREQUENCY_HZ = 20000.0f;
+static const float CURRENT_LOOP_TS_SEC = 1.0f / 20000.0f;
+static const uint32_t ADC_SAMPLE_DELAY_TICKS = 250U; // ~1.47us at 170MHz
+static const float RAD_PER_DEG = 0.01745329252f;
+static const float DEG_PER_RAD = 57.2957795131f;
 // Fixed SVPWM gain: 2/sqrt(3) = 1.1547 in Q15 (37837)
 static const int32_t svpwm_gain_q15 = 37837;
 // Modulation index in Q15 (0.0 to 1.1547 for SVPWM overmodulation)
 static int32_t modulation_index_q15 = (int32_t)(0.30f * 32767.0f);
+
+/* Control Mode Management */
+static Control_Mode_t control_mode = CONTROL_VF;
+
+/* FOC voltage references (alpha-beta frame) - updated by FOC_Update() */
+static float foc_voltage_alpha = 0.0f;
+static float foc_voltage_beta = 0.0f;
+static uint32_t foc_isr_budget_cycles = 6000U;
+volatile uint32_t foc_isr_cycles_last = 0U;
+volatile uint8_t foc_fault_overrun = 0U;
+volatile uint8_t foc_fault_adc_sync = 0U;
+static volatile uint8_t foc_invalid_sample_count = 0U;
+static uint8_t pwm_dma_enabled = 0U;
 
 static Encoder_Handle_t encoder;
 
@@ -119,6 +172,86 @@ static uint8_t uart_rx_buffer[UART_RX_BUFFER_SIZE];
 static uint8_t uart_rx_byte;
 static uint16_t uart_rx_index = 0;
 static uint8_t uart_new_cmd = 0;
+
+/* Telemetry Format Selection */
+typedef enum {
+    TELEMETRY_FORMAT_ASCII = 0,
+    TELEMETRY_FORMAT_BINARY = 1
+} Telemetry_Format_t;
+
+/* Binary Telemetry Packet Structure - Single Sample (14 bytes) */
+typedef struct {
+    uint8_t header;           // 0xAA sync marker
+    uint8_t format_version;   // Version 0x01
+    int16_t ia;               // Phase A current (mA scaled)
+    int16_t ib;               // Phase B current (mA scaled)
+    int16_t ic;               // Phase C current (mA scaled)
+    int16_t speed_rpm;        // Motor speed (RPM)
+    uint16_t timestamp_ms;    // Timestamp (milliseconds)
+    uint8_t flags;            // Status flags
+    uint8_t checksum;         // CRC8 checksum
+} __attribute__((packed)) Telemetry_Binary_t;
+
+/* Telemetry DMA Double Buffer */
+#define TELEMETRY_BUFFER_SIZE 128
+static uint8_t telemetry_buffer[TELEMETRY_BUFFER_SIZE];
+static Telemetry_Format_t telemetry_format = TELEMETRY_FORMAT_BINARY;
+static volatile uint8_t telemetry_enabled = 0;  // Telemetry streaming enable flag
+static uint8_t relay_count = 0;  // Current number of active relays (0-12)
+
+/* Debug variables for monitoring */
+uint8_t button = 0;
+float freq = 0;
+float amp = 0;
+uint32_t encoder_last_tick = 0U;
+/* FOC Variables */
+volatile CurSense_Data_t currents;
+volatile Clarke_Out_t clarke;
+volatile Park_Out_t park;
+volatile float theta = 0.0f; // Rotor angle (electrical)
+volatile float theta_mech = 0.0f; // Rotor angle (mechanical)
+volatile uint8_t encoder_index_locked = 0U;
+static float encoder_elec_offset_rad = 0.0f;
+
+typedef struct {
+    uint8_t active;
+    FOC_Bringup_State_t state;
+    uint32_t state_start_ms;
+    uint32_t last_diag_ms;
+    float id_target;
+    float iq_target;
+} FOC_Bringup_t;
+
+static FOC_Bringup_t foc_bringup = {0};
+
+typedef struct {
+    uint8_t active;
+    FOC_Autocal_State_t state;
+    uint8_t phase;  // 0 = coarse, 1 = fine
+    uint32_t state_start_ms;
+    uint32_t last_diag_ms;
+    float id_ref;
+    float iq_ref;
+    float scan_start_deg;
+    float scan_step_deg;
+    uint16_t scan_count;
+    uint16_t scan_index;
+    float score_accum;
+    uint16_t score_samples;
+    float coarse_best_deg;
+    float coarse_best_score;
+    float fine_best_deg;
+    float fine_best_score;
+    uint8_t slip_prev_en;
+    float slip_prev_gain;
+    float slip_prev_min_id;
+} FOC_Autocal_t;
+
+static FOC_Autocal_t foc_autocal = {0};
+
+/* SVPWM Sampling Variables */
+static SVPWM_Output_t svpwm_output = {0};
+static uint8_t svpwm_enabled = 1U;  // Enable SVPWM-based shunt selection by default
 
 /* USER CODE END PV */
 
@@ -136,19 +269,555 @@ static void MX_TIM6_Init(void);
 static void MX_USART3_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
+// Telemetry function prototypes
+void Telemetry_Start(void);
+static uint16_t prepare_telemetry_data(void);
+
 // Motor control function prototypes
 void Motor_Start(void);
 void Motor_Stop(void);
 void Motor_SetFrequency(float frequency);
 void Motor_SetAmplitude(float amplitude);
+void Motor_EnableFOC(void);
+void Motor_DisableFOC(void);
+void Motor_SetFOC_Id(float Id_ref);
+void Motor_SetFOC_Iq(float Iq_ref);
 void Motor_Update(void);
 void Example_Soft_Start(void);
+
+void Motor_StartOpenLoopFOC(void);
+void Motor_TransitionToClosedLoop(void);
 
 void Example_VF_Control_Ramp(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static inline int32_t ClampQ15(int32_t value)
+{
+    if (value > 32767) {
+        return 32767;
+    }
+    if (value < -32767) {
+        return -32767;
+    }
+    return value;
+}
+
+static void PWM_WriteCompareShadow(uint32_t cmp_a, uint32_t cmp_b, uint32_t cmp_c)
+{
+    __HAL_HRTIM_SETCOMPARE(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, HRTIM_COMPAREUNIT_1, cmp_a);
+    __HAL_HRTIM_SETCOMPARE(&hhrtim1, HRTIM_TIMERINDEX_TIMER_C, HRTIM_COMPAREUNIT_1, cmp_b);
+    __HAL_HRTIM_SETCOMPARE(&hhrtim1, HRTIM_TIMERINDEX_TIMER_D, HRTIM_COMPAREUNIT_1, cmp_c);
+}
+
+static void PWM_SetNeutralDuty(void)
+{
+    uint32_t neutral_cmp = PWM_PERIOD_CYCLES / 2U;
+    PWM_WriteCompareShadow(neutral_cmp, neutral_cmp, neutral_cmp);
+}
+
+static void PWM_EnableDmaRequests(void)
+{
+    if (pwm_dma_enabled != 0U) {
+        return;
+    }
+    __HAL_HRTIM_TIMER_ENABLE_DMA(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, HRTIM_TIM_DMA_RST);
+    __HAL_HRTIM_TIMER_ENABLE_DMA(&hhrtim1, HRTIM_TIMERINDEX_TIMER_C, HRTIM_TIM_DMA_RST);
+    __HAL_HRTIM_TIMER_ENABLE_DMA(&hhrtim1, HRTIM_TIMERINDEX_TIMER_D, HRTIM_TIM_DMA_RST);
+    pwm_dma_enabled = 1U;
+}
+
+static void PWM_DisableDmaRequests(void)
+{
+    if (pwm_dma_enabled == 0U) {
+        return;
+    }
+    __HAL_HRTIM_TIMER_DISABLE_DMA(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, HRTIM_TIM_DMA_RST);
+    __HAL_HRTIM_TIMER_DISABLE_DMA(&hhrtim1, HRTIM_TIMERINDEX_TIMER_C, HRTIM_TIM_DMA_RST);
+    __HAL_HRTIM_TIMER_DISABLE_DMA(&hhrtim1, HRTIM_TIMERINDEX_TIMER_D, HRTIM_TIM_DMA_RST);
+    pwm_dma_enabled = 0U;
+}
+
+static void PWM_ApplyFocVoltage(float v_alpha, float v_beta)
+{
+    int16_t va = (int16_t)(v_alpha * 32767.0f);
+    int16_t vb = (int16_t)((-0.5f * v_alpha + 0.866025f * v_beta) * 32767.0f);
+    int16_t vc = (int16_t)((-0.5f * v_alpha - 0.866025f * v_beta) * 32767.0f);
+
+    int32_t va_sv = ((int32_t)va * svpwm_gain_q15) >> 15;
+    int32_t vb_sv = ((int32_t)vb * svpwm_gain_q15) >> 15;
+    int32_t vc_sv = ((int32_t)vc * svpwm_gain_q15) >> 15;
+
+    uint32_t cmp_a = sine_to_cmp((int16_t)ClampQ15(va_sv), PWM_PERIOD_CYCLES, Q15_MAX);
+    uint32_t cmp_b = sine_to_cmp((int16_t)ClampQ15(vb_sv), PWM_PERIOD_CYCLES, Q15_MAX);
+    uint32_t cmp_c = sine_to_cmp((int16_t)ClampQ15(vc_sv), PWM_PERIOD_CYCLES, Q15_MAX);
+
+    PWM_WriteCompareShadow(cmp_a, cmp_b, cmp_c);
+}
+
+static void FOC_EnterSafeState(void)
+{
+    FOC_Disable();
+    control_mode = CONTROL_VF;
+    foc_voltage_alpha = 0.0f;
+    foc_voltage_beta = 0.0f;
+    PWM_SetNeutralDuty();
+}
+
+static void FOC_InitCycleCounter(void)
+{
+    if ((CoreDebug->DEMCR & CoreDebug_DEMCR_TRCENA_Msk) == 0U) {
+        CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    }
+    DWT->CYCCNT = 0U;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+static float WrapAngle0To2Pi(float angle)
+{
+    const float two_pi = 6.28318530718f;
+    while (angle >= two_pi) {
+        angle -= two_pi;
+    }
+    while (angle < 0.0f) {
+        angle += two_pi;
+    }
+    return angle;
+}
+
+static float WrapAngleMinusPiToPi(float angle)
+{
+    const float pi = 3.14159265359f;
+    const float two_pi = 6.28318530718f;
+
+    while (angle > pi) {
+        angle -= two_pi;
+    }
+    while (angle <= -pi) {
+        angle += two_pi;
+    }
+    return angle;
+}
+
+static uint8_t ParseNextFloat(const char **cursor, float *value)
+{
+    char *end_ptr;
+    const char *ptr = *cursor;
+
+    while ((*ptr == ' ') || (*ptr == '\t')) {
+        ptr++;
+    }
+    if (*ptr == '\0') {
+        return 0U;
+    }
+
+    *value = strtof(ptr, &end_ptr);
+    if (end_ptr == ptr) {
+        return 0U;
+    }
+
+    *cursor = end_ptr;
+    return 1U;
+}
+
+static void SetEncoderElectricalOffsetRad(float offset_rad)
+{
+    encoder_elec_offset_rad = WrapAngleMinusPiToPi(offset_rad);
+}
+
+static void SetEncoderElectricalOffsetDeg(float offset_deg)
+{
+    SetEncoderElectricalOffsetRad(offset_deg * RAD_PER_DEG);
+}
+
+static void FOC_AutocalSetState(FOC_Autocal_State_t state, uint32_t now_ms)
+{
+    foc_autocal.state = state;
+    foc_autocal.state_start_ms = now_ms;
+}
+
+static void FOC_AutocalConfigureScan(float start_deg, float step_deg, uint16_t count)
+{
+    foc_autocal.scan_start_deg = start_deg;
+    foc_autocal.scan_step_deg = step_deg;
+    foc_autocal.scan_count = count;
+    foc_autocal.scan_index = 0U;
+}
+
+static void FOC_AutocalAbort(const char *reason)
+{
+    char msg[96];
+
+    if (foc_autocal.active == 0U) {
+        if (reason != NULL) {
+            const char *idle_msg = "Auto-cal not active\r\n";
+            HAL_UART_Transmit(&huart3, (uint8_t *)idle_msg, strlen(idle_msg), 200);
+        }
+        return;
+    }
+
+    FOC_SetIdReference(0.0f);
+    FOC_SetIqReference(0.0f);
+    FOC_SetSlipCompensation(foc_autocal.slip_prev_en,
+                            foc_autocal.slip_prev_gain,
+                            foc_autocal.slip_prev_min_id);
+
+    foc_autocal.active = 0U;
+    foc_autocal.state = FOC_AUTOCAL_IDLE;
+
+    if (reason != NULL) {
+        snprintf(msg, sizeof(msg), "Auto-cal aborted: %s\r\n", reason);
+        HAL_UART_Transmit(&huart3, (uint8_t *)msg, strlen(msg), 200);
+    }
+}
+
+static void FOC_AutocalStart(void)
+{
+    uint32_t now_ms = HAL_GetTick();
+    float speed_rpm = Encoder_GetSpeedRpm(&encoder);
+    FOC_Control_t *foc_state;
+
+    if (Encoder_HasIndex(&encoder) == 0U) {
+        const char *msg = "Auto-cal blocked: wait index\r\n";
+        HAL_UART_Transmit(&huart3, (uint8_t *)msg, strlen(msg), 200);
+        return;
+    }
+    if (foc_bringup.active != 0U) {
+        const char *msg = "Auto-cal blocked: bring-up active\r\n";
+        HAL_UART_Transmit(&huart3, (uint8_t *)msg, strlen(msg), 200);
+        return;
+    }
+    if (foc_autocal.active != 0U) {
+        const char *msg = "Auto-cal already active\r\n";
+        HAL_UART_Transmit(&huart3, (uint8_t *)msg, strlen(msg), 200);
+        return;
+    }
+    if (fabsf(speed_rpm) > 120.0f) {
+        const char *msg = "Auto-cal blocked: stop motor first\r\n";
+        HAL_UART_Transmit(&huart3, (uint8_t *)msg, strlen(msg), 200);
+        return;
+    }
+
+    Motor_EnableFOC();
+    Motor_Start();
+
+    foc_state = FOC_GetState();
+    foc_autocal.slip_prev_en = foc_state->slip_comp_enabled;
+    foc_autocal.slip_prev_gain = foc_state->slip_gain;
+    foc_autocal.slip_prev_min_id = foc_state->min_id_for_slip;
+
+    // Calibrate electrical offset with rotor angle only; re-enable slip after routine.
+    FOC_SetSlipCompensation(0U, foc_state->slip_gain, foc_state->min_id_for_slip);
+    FOC_SetIdReference(0.0f);
+    FOC_SetIqReference(0.0f);
+
+    foc_autocal.active = 1U;
+    foc_autocal.phase = 0U;
+    foc_autocal.last_diag_ms = 0U;
+    foc_autocal.id_ref = 0.35f;
+    foc_autocal.iq_ref = 0.45f;
+    foc_autocal.score_accum = 0.0f;
+    foc_autocal.score_samples = 0U;
+    foc_autocal.coarse_best_deg = 0.0f;
+    foc_autocal.coarse_best_score = -1.0e9f;
+    foc_autocal.fine_best_deg = 0.0f;
+    foc_autocal.fine_best_score = -1.0e9f;
+
+    // Coarse sweep: 12 points, 30 deg step across one electrical turn.
+    FOC_AutocalConfigureScan(-180.0f, 30.0f, 12U);
+    FOC_AutocalSetState(FOC_AUTOCAL_PREPARE_POINT, now_ms);
+
+    {
+        const char *msg = "Auto-cal started (RAM only)\r\n";
+        HAL_UART_Transmit(&huart3, (uint8_t *)msg, strlen(msg), 200);
+    }
+}
+
+static void FOC_AutocalUpdate(uint32_t now_ms)
+{
+    if (foc_autocal.active == 0U) {
+        return;
+    }
+
+    if ((control_mode != CONTROL_FOC) || (Encoder_HasIndex(&encoder) == 0U)) {
+        FOC_AutocalAbort("mode/index");
+        return;
+    }
+    if ((foc_fault_overrun != 0U) || (foc_fault_adc_sync != 0U)) {
+        FOC_AutocalAbort("fault");
+        return;
+    }
+
+    {
+        uint32_t elapsed_ms = now_ms - foc_autocal.state_start_ms;
+        switch (foc_autocal.state) {
+            case FOC_AUTOCAL_PREPARE_POINT: {
+                float candidate_deg = foc_autocal.scan_start_deg +
+                                      ((float)foc_autocal.scan_index * foc_autocal.scan_step_deg);
+                SetEncoderElectricalOffsetDeg(candidate_deg);
+                FOC_SetIdReference(foc_autocal.id_ref);
+                FOC_SetIqReference(foc_autocal.iq_ref);
+                foc_autocal.score_accum = 0.0f;
+                foc_autocal.score_samples = 0U;
+                FOC_AutocalSetState(FOC_AUTOCAL_SETTLE_POINT, now_ms);
+                break;
+            }
+
+            case FOC_AUTOCAL_SETTLE_POINT:
+                if (elapsed_ms >= 150U) {
+                    FOC_AutocalSetState(FOC_AUTOCAL_MEASURE_POINT, now_ms);
+                }
+                break;
+
+            case FOC_AUTOCAL_MEASURE_POINT: {
+                float signed_speed = Encoder_GetSpeedRpm(&encoder);
+                if (foc_autocal.iq_ref < 0.0f) {
+                    signed_speed = -signed_speed;
+                }
+                foc_autocal.score_accum += signed_speed;
+                foc_autocal.score_samples++;
+
+                if (elapsed_ms >= 170U) {
+                    float candidate_deg = foc_autocal.scan_start_deg +
+                                          ((float)foc_autocal.scan_index * foc_autocal.scan_step_deg);
+                    float avg_score = (foc_autocal.score_samples > 0U)
+                                      ? (foc_autocal.score_accum / (float)foc_autocal.score_samples)
+                                      : -1.0e9f;
+
+                    if (foc_autocal.phase == 0U) {
+                        if (avg_score > foc_autocal.coarse_best_score) {
+                            foc_autocal.coarse_best_score = avg_score;
+                            foc_autocal.coarse_best_deg = candidate_deg;
+                        }
+                    } else {
+                        if (avg_score > foc_autocal.fine_best_score) {
+                            foc_autocal.fine_best_score = avg_score;
+                            foc_autocal.fine_best_deg = candidate_deg;
+                        }
+                    }
+
+                    foc_autocal.scan_index++;
+                    if (foc_autocal.scan_index >= foc_autocal.scan_count) {
+                        if (foc_autocal.phase == 0U) {
+                            // Fine sweep around coarse best.
+                            foc_autocal.phase = 1U;
+                            foc_autocal.fine_best_score = -1.0e9f;
+                            foc_autocal.fine_best_deg = foc_autocal.coarse_best_deg;
+                            FOC_AutocalConfigureScan(foc_autocal.coarse_best_deg - 20.0f, 5.0f, 9U);
+                            FOC_AutocalSetState(FOC_AUTOCAL_PREPARE_POINT, now_ms);
+                        } else {
+                            SetEncoderElectricalOffsetDeg(foc_autocal.fine_best_deg);
+                            FOC_AutocalSetState(FOC_AUTOCAL_RAMP_DOWN, now_ms);
+                        }
+                    } else {
+                        FOC_AutocalSetState(FOC_AUTOCAL_PREPARE_POINT, now_ms);
+                    }
+                }
+                break;
+            }
+
+            case FOC_AUTOCAL_RAMP_DOWN: {
+                const uint32_t dur_ms = 400U;
+                float k = (elapsed_ms >= dur_ms) ? 1.0f : ((float)elapsed_ms / (float)dur_ms);
+                FOC_SetIdReference(foc_autocal.id_ref * (1.0f - k));
+                FOC_SetIqReference(foc_autocal.iq_ref * (1.0f - k));
+
+                if (elapsed_ms >= dur_ms) {
+                    char msg[128];
+                    SetEncoderElectricalOffsetDeg(foc_autocal.fine_best_deg);
+                    FOC_SetIdReference(0.0f);
+                    FOC_SetIqReference(0.0f);
+                    FOC_SetSlipCompensation(foc_autocal.slip_prev_en,
+                                            foc_autocal.slip_prev_gain,
+                                            foc_autocal.slip_prev_min_id);
+                    foc_autocal.active = 0U;
+                    foc_autocal.state = FOC_AUTOCAL_IDLE;
+
+                    snprintf(msg, sizeof(msg),
+                             "Auto-cal done: %.2f deg (RAM only, no flash)\r\n",
+                             encoder_elec_offset_rad * DEG_PER_RAD);
+                    HAL_UART_Transmit(&huart3, (uint8_t *)msg, strlen(msg), 200);
+                }
+                break;
+            }
+
+            case FOC_AUTOCAL_IDLE:
+            default:
+                foc_autocal.active = 0U;
+                foc_autocal.state = FOC_AUTOCAL_IDLE;
+                break;
+        }
+    }
+
+    if ((foc_autocal.active != 0U) && ((now_ms - foc_autocal.last_diag_ms) >= 250U)) {
+        char diag[140];
+        float scan_deg = foc_autocal.scan_start_deg +
+                         ((float)foc_autocal.scan_index * foc_autocal.scan_step_deg);
+        snprintf(diag, sizeof(diag),
+                 "CALZ:P%u S%u Off:%.1f Scan:%.1f Spd:%.2f\r\n",
+                 (unsigned int)foc_autocal.phase,
+                 (unsigned int)foc_autocal.state,
+                 encoder_elec_offset_rad * DEG_PER_RAD,
+                 scan_deg,
+                 Encoder_GetSpeedRpm(&encoder));
+        HAL_UART_Transmit(&huart3, (uint8_t *)diag, strlen(diag), 200);
+        foc_autocal.last_diag_ms = now_ms;
+    }
+}
+
+static void FOC_BringupSetState(FOC_Bringup_State_t state, uint32_t now_ms)
+{
+    foc_bringup.state = state;
+    foc_bringup.state_start_ms = now_ms;
+}
+
+static void FOC_BringupAbort(const char *reason)
+{
+    char msg[96];
+
+    foc_bringup.active = 0U;
+    foc_bringup.state = FOC_BRINGUP_IDLE;
+    FOC_SetIdReference(0.0f);
+    FOC_SetIqReference(0.0f);
+
+    if (reason != NULL) {
+        snprintf(msg, sizeof(msg), "Bring-up aborted: %s\r\n", reason);
+        HAL_UART_Transmit(&huart3, (uint8_t *)msg, strlen(msg), 200);
+    }
+}
+
+static void FOC_BringupStart(void)
+{
+    uint32_t now_ms = HAL_GetTick();
+
+    if (Encoder_HasIndex(&encoder) == 0U) {
+        HAL_UART_Transmit(&huart3, (uint8_t *)"Bring-up blocked: wait index\r\n", 30, 200);
+        return;
+    }
+
+    if (foc_bringup.active != 0U) {
+        HAL_UART_Transmit(&huart3, (uint8_t *)"Bring-up already active\r\n", 25, 200);
+        return;
+    }
+    if (foc_autocal.active != 0U) {
+        const char *msg = "Bring-up blocked: auto-cal active\r\n";
+        HAL_UART_Transmit(&huart3, (uint8_t *)msg, strlen(msg), 200);
+        return;
+    }
+
+    Motor_EnableFOC();
+    FOC_SetIdReference(0.0f);
+    FOC_SetIqReference(0.0f);
+
+    foc_bringup.active = 1U;
+    foc_bringup.id_target = 0.40f;
+    foc_bringup.iq_target = 0.60f;
+    foc_bringup.last_diag_ms = 0U;
+    FOC_BringupSetState(FOC_BRINGUP_PREPARE, now_ms);
+
+    HAL_UART_Transmit(&huart3, (uint8_t *)"FOC bring-up started\r\n", 22, 200);
+}
+
+static void FOC_BringupUpdate(uint32_t now_ms)
+{
+    if (foc_bringup.active == 0U) {
+        return;
+    }
+
+    if ((control_mode != CONTROL_FOC) || (Encoder_HasIndex(&encoder) == 0U)) {
+        FOC_BringupAbort("mode/index");
+        return;
+    }
+    if ((foc_fault_overrun != 0U) || (foc_fault_adc_sync != 0U)) {
+        FOC_BringupAbort("fault");
+        return;
+    }
+
+    uint32_t elapsed_ms = now_ms - foc_bringup.state_start_ms;
+    switch (foc_bringup.state) {
+        case FOC_BRINGUP_PREPARE:
+            FOC_SetIdReference(0.0f);
+            FOC_SetIqReference(0.0f);
+            if (elapsed_ms >= 250U) {
+                FOC_BringupSetState(FOC_BRINGUP_RAMP_ID, now_ms);
+            }
+            break;
+
+        case FOC_BRINGUP_RAMP_ID: {
+            const uint32_t dur_ms = 1200U;
+            float k = (elapsed_ms >= dur_ms) ? 1.0f : ((float)elapsed_ms / (float)dur_ms);
+            FOC_SetIdReference(foc_bringup.id_target * k);
+            FOC_SetIqReference(0.0f);
+            if (elapsed_ms >= dur_ms) {
+                FOC_BringupSetState(FOC_BRINGUP_HOLD_ID, now_ms);
+            }
+            break;
+        }
+
+        case FOC_BRINGUP_HOLD_ID:
+            FOC_SetIdReference(foc_bringup.id_target);
+            FOC_SetIqReference(0.0f);
+            if (elapsed_ms >= 600U) {
+                FOC_BringupSetState(FOC_BRINGUP_RAMP_IQ, now_ms);
+            }
+            break;
+
+        case FOC_BRINGUP_RAMP_IQ: {
+            const uint32_t dur_ms = 1200U;
+            float k = (elapsed_ms >= dur_ms) ? 1.0f : ((float)elapsed_ms / (float)dur_ms);
+            FOC_SetIdReference(foc_bringup.id_target);
+            FOC_SetIqReference(foc_bringup.iq_target * k);
+            if (elapsed_ms >= dur_ms) {
+                FOC_BringupSetState(FOC_BRINGUP_HOLD_RUN, now_ms);
+            }
+            break;
+        }
+
+        case FOC_BRINGUP_HOLD_RUN:
+            FOC_SetIdReference(foc_bringup.id_target);
+            FOC_SetIqReference(foc_bringup.iq_target);
+            if (elapsed_ms >= 1500U) {
+                FOC_BringupSetState(FOC_BRINGUP_RAMP_DOWN, now_ms);
+            }
+            break;
+
+        case FOC_BRINGUP_RAMP_DOWN: {
+            const uint32_t dur_ms = 1000U;
+            float k = (elapsed_ms >= dur_ms) ? 1.0f : ((float)elapsed_ms / (float)dur_ms);
+            FOC_SetIdReference(foc_bringup.id_target);
+            FOC_SetIqReference(foc_bringup.iq_target * (1.0f - k));
+            if (elapsed_ms >= dur_ms) {
+                foc_bringup.active = 0U;
+                foc_bringup.state = FOC_BRINGUP_IDLE;
+                FOC_SetIqReference(0.0f);
+                HAL_UART_Transmit(&huart3, (uint8_t *)"FOC bring-up completed\r\n", 24, 200);
+            }
+            break;
+        }
+
+        case FOC_BRINGUP_IDLE:
+        default:
+            foc_bringup.active = 0U;
+            break;
+    }
+
+    if ((foc_bringup.active != 0U) && ((now_ms - foc_bringup.last_diag_ms) >= 100U)) {
+        FOC_Control_t *foc_state = FOC_GetState();
+        char diag[160];
+        snprintf(diag, sizeof(diag),
+                 "BRG:%u IdR:%.2f IqR:%.2f Id:%.2f Iq:%.2f Off:%.1f\r\n",
+                 (unsigned int)foc_bringup.state,
+                 foc_state->Id_ref,
+                 foc_state->Iq_ref,
+                 park.d,
+                 park.q,
+                 encoder_elec_offset_rad / RAD_PER_DEG);
+        HAL_UART_Transmit(&huart3, (uint8_t *)diag, strlen(diag), 200);
+        foc_bringup.last_diag_ms = now_ms;
+    }
+}
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == USART3)
@@ -174,18 +843,55 @@ void Process_Command(uint8_t *cmd_buffer)
 {
     char *cmd = (char*)cmd_buffer;
     float val_f;
+    uint8_t has_arg;
     
     // Command format: "CHAR VALUE"
-    // F 50.0  -> Set Frequency 50Hz
-    // A 0.5   -> Set Amplitude 0.5
-    // R 1000  -> Set RPM (example)
-    // S       -> Motor Start
-    // X       -> Motor Stop
-    // C       -> Calibrate Current Sensors (motor must be OFF)
+    // V/F Control commands:
+    //   F 50.0  -> Set Frequency 50Hz
+    //   A 0.5   -> Set Amplitude 0.5
+    //   R 1000  -> Set RPM (example)
+    //   S       -> Motor Start
+    //   X       -> Motor Stop
+    //
+    // FOC Control commands:
+    //   M V     -> Switch to V/F control Mode
+    //   M F     -> Switch to FOC control Mode (encoder required)
+    //   O       -> Start Open-Loop FOC (flux align + ramp)
+    //   T       -> Transition to closed-loop FOC (after open-loop)
+    //   I 0.5   -> Set Id (flux) reference current (Amperes)
+    //   Q 1.0   -> Set Iq (torque) reference current (Amperes)
+    //   W       -> Query open-loop state, Vbus, frequency, angle, Id, Iq
+    //   P       -> Display motor parameters (Rs, Rr, Lm, Ls, Lr)
+    //   E <deg> -> Encoder offset (NOT needed for induction motors)
+    //   N <0|1> -> Disable/enable slip compensation
+    //   G <val> -> Set slip gain
+    //
+    // Calibration commands:
+    //   C [N]   -> Calibrate Current Sensor offsets (zero-current state)
+    //   B       -> Run safe FOC bring-up sequence
+    //   Z [0]   -> Run electrical offset auto-cal (0 aborts)
+    //
+    // Relay & Load Control commands:
+    //   L <0-12> -> Set number of active load relays (0=none, 12=all)
+    //   L+       -> Activate all load relays
+    //   L-       -> Deactivate all load relays
+    //   L        -> Query current load status
+    //
+    // Telemetry commands:
+    //   U 0      -> ASCII telemetry format
+    //   U 1      -> Binary telemetry format
+    //   U        -> Query telemetry format
+    //   Y 1      -> Enable telemetry streaming (1kHz via UART DMA)
+    //   Y 0      -> Disable telemetry streaming
+    //   Y        -> Query telemetry streaming status
     
     // Parse float manually to avoid sscanf issues on some platforms
     char *ptr = cmd + 1;
-    val_f = strtof(ptr, NULL);
+    while ((*ptr == ' ') || (*ptr == '\t')) {
+        ptr++;
+    }
+    has_arg = (*ptr != '\0') ? 1U : 0U;
+    val_f = has_arg ? strtof(ptr, NULL) : 0.0f;
 
     switch (cmd[0]) {
         case 'F': // Frequency
@@ -202,9 +908,16 @@ void Process_Command(uint8_t *cmd_buffer)
             break;
         case 'R': // RPM
         case 'r':
-            if (val_f != 0.0f) {
-                float fe = (val_f * MOTOR_POLE_PAIRS) / 60.0f;
-                Motor_SetFrequency(fe);
+            if (val_f > 0.0f) {
+              // Convert RPM to electrical frequency (Hz)
+              // f_elec = RPM * pole_pairs / 60
+              float freq_hz = (val_f * MOTOR_POLE_PAIRS) / 60.0f;
+              Motor_SetFrequency(freq_hz);
+              // Set amplitude proportional to frequency for V/F control
+              // V/F keeps voltage/frequency ratio constant for constant flux
+              float amplitude = (freq_hz / 50.0f) * 0.5f;  // Scale to nominal 50Hz
+              if (amplitude > 0.94f) amplitude = 0.94f;
+              Motor_SetAmplitude(amplitude);
             }
             break;
         case 'S': // Start
@@ -215,9 +928,195 @@ void Process_Command(uint8_t *cmd_buffer)
         case 'x':
             Motor_Stop();
             break;
-        case 'C': // Calibrate Current Sensors
-        case 'c':
-            CurrentSense_Calibrate(100);
+        case 'M': // Control Mode selection
+        case 'm':
+            if (cmd[2] == 'V' || cmd[2] == 'v') {
+                Motor_DisableFOC();
+                HAL_UART_Transmit(&huart3, (uint8_t*)"Mode: V/F\r\n", 11, 500);
+            } else if (cmd[2] == 'F' || cmd[2] == 'f') {
+              Motor_EnableFOC();
+              HAL_UART_Transmit(&huart3, (uint8_t*)"Mode: FOC\r\n", 11, 500);
+            }
+            break;
+        case 'I': // Set Id reference (flux)
+        case 'i':
+            FOC_SetIdReference(val_f);
+            break;
+        case 'Q': // Set Iq reference (torque)
+        case 'q':
+            FOC_SetIqReference(val_f);
+            break;
+        case 'E': // Encoder electrical offset (NOT NEEDED for induction motors)
+        case 'e':
+            // For induction motors, encoder offset should remain at 0.0
+            // This command is kept for compatibility but not typically used
+            if (has_arg != 0U) {
+                SetEncoderElectricalOffsetDeg(val_f);
+                HAL_UART_Transmit(&huart3, (uint8_t*)"WARNING: Encoder offset not needed for induction motors\r\n", 58, 200);
+            }
+            {
+                char msg[128];
+                snprintf(msg, sizeof(msg), "Encoder offset: %.2f deg (should be 0.0 for induction motors)\r\n", 
+                         encoder_elec_offset_rad * DEG_PER_RAD);
+                HAL_UART_Transmit(&huart3, (uint8_t *)msg, strlen(msg), 200);
+            }
+            break;
+        case 'O': // Open-Loop FOC startup
+        case 'o':
+            Motor_StartOpenLoopFOC();
+            HAL_UART_Transmit(&huart3, (uint8_t*)"Open-Loop FOC: STARTED\r\n", 24, 200);
+            break;
+        case 'N': // Slip compensation enable
+        case 'n':
+            if (has_arg != 0U) {
+                FOC_Control_t *foc_state = FOC_GetState();
+                uint8_t en = (val_f > 0.5f) ? 1U : 0U;
+                FOC_SetSlipCompensation(en, foc_state->slip_gain, foc_state->min_id_for_slip);
+                HAL_UART_Transmit(&huart3, (uint8_t *)(en ? "Slip: ON\r\n" : "Slip: OFF\r\n"), en ? 10 : 11, 200);
+            }
+            break;
+        case 'G': // Slip gain
+        case 'g':
+            if (has_arg != 0U) {
+                FOC_Control_t *foc_state = FOC_GetState();
+                FOC_SetSlipCompensation(foc_state->slip_comp_enabled, val_f, foc_state->min_id_for_slip);
+                char msg[64];
+                snprintf(msg, sizeof(msg), "Slip gain: %.3f\r\n", FOC_GetState()->slip_gain);
+                HAL_UART_Transmit(&huart3, (uint8_t *)msg, strlen(msg), 200);
+            }
+            break;
+        case 'B': // Safe FOC bring-up sequence
+        case 'b':
+            if ((has_arg != 0U) && (val_f <= 0.0f)) {
+                FOC_BringupAbort("user");
+            } else {
+                FOC_BringupStart();
+            }
+            break;
+        case 'Z': // Auto electrical offset calibration (RAM only)
+        case 'z':
+            if ((has_arg != 0U) && (val_f <= 0.0f)) {
+                FOC_AutocalAbort("user");
+            } else {
+                FOC_AutocalStart();
+            }
+            break;
+        case 'U': // Telemetry format: ASCII (0) or Binary (1)
+        case 'u':
+            if (has_arg != 0U) {
+                if (val_f > 0.5f) {
+                    telemetry_format = TELEMETRY_FORMAT_BINARY;
+                    HAL_UART_Transmit(&huart3, (uint8_t*)"Telemetry: BINARY\r\n", 19, 200);
+                } else {
+                    telemetry_format = TELEMETRY_FORMAT_ASCII;
+                    HAL_UART_Transmit(&huart3, (uint8_t*)"Telemetry: ASCII\r\n", 18, 200);
+                }
+            } else {
+                if (telemetry_format == TELEMETRY_FORMAT_BINARY) {
+                    HAL_UART_Transmit(&huart3, (uint8_t*)"Telemetry: BINARY\r\n", 19, 200);
+                } else {
+                    HAL_UART_Transmit(&huart3, (uint8_t*)"Telemetry: ASCII\r\n", 18, 200);
+                }
+            }
+            break;
+        case 'Y': // Start/Stop telemetry streaming
+        case 'y':
+            if (has_arg != 0U) {
+                if (val_f > 0.5f) {
+                    telemetry_enabled = 1U;
+                    HAL_UART_Transmit(&huart3, (uint8_t*)"Telemetry: ENABLED (1kHz)\r\n", 29, 200);
+                    Telemetry_Start();
+                } else {
+                    telemetry_enabled = 0U;
+                    HAL_UART_Transmit(&huart3, (uint8_t*)"Telemetry: DISABLED\r\n", 22, 200);
+                }
+            } else {
+                if (telemetry_enabled != 0U) {
+                    HAL_UART_Transmit(&huart3, (uint8_t*)"Telemetry: ENABLED (1kHz)\r\n", 29, 200);
+                } else {
+                    HAL_UART_Transmit(&huart3, (uint8_t*)"Telemetry: DISABLED\r\n", 22, 200);
+                }
+            }
+            break;
+        case 'T': // Transition to Closed-Loop FOC
+        case 't':
+            Motor_TransitionToClosedLoop();
+            if (FOC_GetMode() == FOC_MODE_CLOSED_LOOP) {
+                HAL_UART_Transmit(&huart3, (uint8_t*)"FOC Mode: CLOSED-LOOP\r\n", 23, 200);
+            } else {
+                HAL_UART_Transmit(&huart3, (uint8_t*)"Transition failed: check encoder\r\n", 34, 200);
+            }
+            break;
+        case 'W': // Query open-loop state and Vbus
+        case 'w':
+            {
+                OpenLoop_State_t ol_state = FOC_GetOpenLoopState();
+                FOC_Control_t *foc = FOC_GetState();
+                const char* state_names[] = {
+                    "IDLE", "FLUX_ALIGN", "FLUX_RAMP", "ACCEL", "RUNNING", "COMPLETE"
+                };
+            char msg[200];
+            snprintf(msg, sizeof(msg),
+                 "Vbus:%.1fV OL:%s Freq:%.1fHz Angle:%.1fdeg Id:%.2fA Iq:%.2fA | Idm:%.2f Iqm:%.2f | ISR:%lu cyc ADC:%u OV:%u SV:%u\r\n",
+                 foc->Vbus,
+                 state_names[ol_state],
+                 foc->openloop_freq,
+                 foc->openloop_angle * DEG_PER_RAD,
+                 foc->Id_ref,
+                 foc->Iq_ref,
+                 foc->i_park.d,
+                 foc->i_park.q,
+                 (unsigned long)foc_isr_cycles_last,
+                 (unsigned int)foc_fault_adc_sync,
+                 (unsigned int)foc_fault_overrun,
+                 (unsigned int)svpwm_output.valid);
+                HAL_UART_Transmit(&huart3, (uint8_t*)msg, strlen(msg), 200);
+            }
+            break;
+        case 'P': // Display motor parameters
+        case 'p':
+            {
+                FOC_Control_t *foc = FOC_GetState();
+                char msg[300];
+                snprintf(msg, sizeof(msg), 
+                         "Motor Parameters:\\r\\n"
+                         "  Rs  = %.3f ohm (stator resistance)\\r\\n"
+                         "  Rr  = %.3f ohm (rotor resistance)\\r\\n"
+                         "  Lm  = %.3f H   (magnetizing inductance)\\r\\n"
+                         "  Ls  = %.3f H   (stator inductance)\\r\\n"
+                         "  Lr  = %.3f H   (rotor inductance)\\r\\n"
+                         "  Vbus= %.1f V   (DC bus voltage)\\r\\n",
+                         foc->Rs, foc->Rr, foc->Lm, foc->Ls, foc->Lr, foc->Vbus);
+                HAL_UART_Transmit(&huart3, (uint8_t*)msg, strlen(msg), 200);
+            }
+            break;
+        case 'L': // Relay control: L <count> (0-12) | L+ (add all) | L- (remove all) | L (query)
+        case 'l':
+            if (cmd[1] == '+') {
+                // Add all relays
+                Relay_SetLoad(12);
+                relay_count = 12;
+                HAL_UART_Transmit(&huart3, (uint8_t*)"Load: ON (12/12 relays)\r\n", 26, 200);
+            } else if (cmd[1] == '-') {
+                // Remove all relays
+                Relay_SetLoad(0);
+                relay_count = 0;
+                HAL_UART_Transmit(&huart3, (uint8_t*)"Load: OFF (0/12 relays)\r\n", 26, 200);
+            } else if (has_arg != 0U) {
+                // Set specific number of relays (0-12)
+                uint8_t count = (uint8_t)val_f;
+                if (count > 12) count = 12;
+                Relay_SetLoad(count);
+                relay_count = count;
+                char rmsg[64];
+                snprintf(rmsg, sizeof(rmsg), "Load: %u/12 relays\r\n", count);
+                HAL_UART_Transmit(&huart3, (uint8_t *)rmsg, strlen(rmsg), 200);
+            } else {
+                // Query current relay state
+                char rmsg[64];
+                snprintf(rmsg, sizeof(rmsg), "Load: %u/12 relays\r\n", relay_count);
+                HAL_UART_Transmit(&huart3, (uint8_t *)rmsg, strlen(rmsg), 200);
+            }
             break;
         default:
             break;
@@ -226,48 +1125,79 @@ void Process_Command(uint8_t *cmd_buffer)
 
 void fill_block(uint32_t start, uint32_t count)
 {
-    for (uint32_t i = 0; i < count; i++) {
-        uint32_t phU = phase_accumulator;
-        uint32_t phV = phase_accumulator + PHASE_120;
-        uint32_t phW = phase_accumulator + PHASE_240;
+    if (control_mode == CONTROL_FOC) {
+        // FOC mode: use voltage references from FOC controller
+        // In FOC mode, voltage references are already in alpha-beta frame
+        for (uint32_t i = 0; i < count; i++) {
+            // Convert FOC voltage references (normalized, -1.0 to 1.0) to PWM compare values
+            // Inverse Clarke transform: convert alpha-beta to 3-phase
+            // Va = v_alpha
+            // Vb = -0.5*v_alpha + sqrt(3)/2*v_beta
+            // Vc = -0.5*v_alpha - sqrt(3)/2*v_beta
+            int16_t va = (int16_t)(foc_voltage_alpha * 32767.0f);
+            int16_t vb = (int16_t)((-0.5f * foc_voltage_alpha + 0.866025f * foc_voltage_beta) * 32767.0f);
+            int16_t vc = (int16_t)((-0.5f * foc_voltage_alpha - 0.866025f * foc_voltage_beta) * 32767.0f);
+            
+            // Apply SVPWM gain and saturation
+            int32_t va_sv = ((int32_t)va * svpwm_gain_q15) >> 15;
+            int32_t vb_sv = ((int32_t)vb * svpwm_gain_q15) >> 15;
+            int32_t vc_sv = ((int32_t)vc * svpwm_gain_q15) >> 15;
+            
+            // Saturate
+            if (va_sv > 32767) va_sv = 32767; else if (va_sv < -32767) va_sv = -32767;
+            if (vb_sv > 32767) vb_sv = 32767; else if (vb_sv < -32767) vb_sv = -32767;
+            if (vc_sv > 32767) vc_sv = 32767; else if (vc_sv < -32767) vc_sv = -32767;
+            
+            // Convert to PWM compare values with modulation index
+            dma_buffer_phase_a[start + i] = sine_to_cmp((int16_t)va_sv, PWM_PERIOD_CYCLES, Q15_MAX);
+            dma_buffer_phase_b[start + i] = sine_to_cmp((int16_t)vb_sv, PWM_PERIOD_CYCLES, Q15_MAX);
+            dma_buffer_phase_c[start + i] = sine_to_cmp((int16_t)vc_sv, PWM_PERIOD_CYCLES, Q15_MAX);
+        }
+    } else {
+        // V/F mode: traditional sine wave generation
+        for (uint32_t i = 0; i < count; i++) {
+            uint32_t phU = phase_accumulator;
+            uint32_t phV = phase_accumulator + PHASE_120;
+            uint32_t phW = phase_accumulator + PHASE_240;
 
-        int16_t sU = get_sine_q15(phU);
-        int16_t sV = get_sine_q15(phV);
-        int16_t sW = get_sine_q15(phW);
+            int16_t sU = get_sine_q15(phU);
+            int16_t sV = get_sine_q15(phV);
+            int16_t sW = get_sine_q15(phW);
 
-        // SVPWM Implementation (Min-Max Injection)
-        int16_t min_v = sU;
-        int16_t max_v = sU;
+            // SVPWM Implementation (Min-Max Injection)
+            int16_t min_v = sU;
+            int16_t max_v = sU;
 
-        if (sV < min_v) min_v = sV;
-        if (sV > max_v) max_v = sV;
+            if (sV < min_v) min_v = sV;
+            if (sV > max_v) max_v = sV;
 
-        if (sW < min_v) min_v = sW;
-        if (sW > max_v) max_v = sW;
+            if (sW < min_v) min_v = sW;
+            if (sW > max_v) max_v = sW;
 
-        // Calculate zero-sequence voltage: -0.5 * (min + max)
-        int16_t v_offset = -((int32_t)min_v + max_v) / 2;
+            // Calculate zero-sequence voltage: -0.5 * (min + max)
+            int16_t v_offset = -((int32_t)min_v + max_v) / 2;
 
-        int32_t sU_sv = (int32_t)sU + v_offset;
-        int32_t sV_sv = (int32_t)sV + v_offset;
-        int32_t sW_sv = (int32_t)sW + v_offset;
+            int32_t sU_sv = (int32_t)sU + v_offset;
+            int32_t sV_sv = (int32_t)sV + v_offset;
+            int32_t sW_sv = (int32_t)sW + v_offset;
 
-        // Apply fixed SVPWM gain (2/sqrt(3))
-        sU_sv = (sU_sv * svpwm_gain_q15) >> 15;
-        sV_sv = (sV_sv * svpwm_gain_q15) >> 15;
-        sW_sv = (sW_sv * svpwm_gain_q15) >> 15;
+            // Apply fixed SVPWM gain (2/sqrt(3))
+            sU_sv = (sU_sv * svpwm_gain_q15) >> 15;
+            sV_sv = (sV_sv * svpwm_gain_q15) >> 15;
+            sW_sv = (sW_sv * svpwm_gain_q15) >> 15;
 
-        // Saturate to ensure int16 valid range (conservative)
-        if (sU_sv > 32767) sU_sv = 32767; else if (sU_sv < -32767) sU_sv = -32767;
-        if (sV_sv > 32767) sV_sv = 32767; else if (sV_sv < -32767) sV_sv = -32767;
-        if (sW_sv > 32767) sW_sv = 32767; else if (sW_sv < -32767) sW_sv = -32767;
+            // Saturate to ensure int16 valid range (conservative)
+            if (sU_sv > 32767) sU_sv = 32767; else if (sU_sv < -32767) sU_sv = -32767;
+            if (sV_sv > 32767) sV_sv = 32767; else if (sV_sv < -32767) sV_sv = -32767;
+            if (sW_sv > 32767) sW_sv = 32767; else if (sW_sv < -32767) sW_sv = -32767;
 
-        // Apply modulation index only in sine_to_cmp()
-        dma_buffer_phase_a[start + i] = sine_to_cmp((int16_t)sU_sv, PWM_PERIOD_CYCLES, modulation_index_q15);
-        dma_buffer_phase_b[start + i] = sine_to_cmp((int16_t)sV_sv, PWM_PERIOD_CYCLES, modulation_index_q15);
-        dma_buffer_phase_c[start + i] = sine_to_cmp((int16_t)sW_sv, PWM_PERIOD_CYCLES, modulation_index_q15);
+            // Apply modulation index only in sine_to_cmp()
+            dma_buffer_phase_a[start + i] = sine_to_cmp((int16_t)sU_sv, PWM_PERIOD_CYCLES, modulation_index_q15);
+            dma_buffer_phase_b[start + i] = sine_to_cmp((int16_t)sV_sv, PWM_PERIOD_CYCLES, modulation_index_q15);
+            dma_buffer_phase_c[start + i] = sine_to_cmp((int16_t)sW_sv, PWM_PERIOD_CYCLES, modulation_index_q15);
 
-        phase_accumulator += phase_increment; // advance one PWM update step
+            phase_accumulator += phase_increment; // advance one PWM update step
+        }
     }
 }
 
@@ -318,16 +1248,6 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-/* Debug variables for monitoring */
-uint8_t button = 0;
-float freq = 0;
-float amp = 0;
-uint32_t encoder_last_tick = 0U;
-/* FOC Variables */
-CurSense_Data_t currents;
-Clarke_Out_t clarke;
-Park_Out_t park;
-float theta = 0.0f; // Rotor angle (electrical)
 
   /* USER CODE END 1 */
 
@@ -359,13 +1279,40 @@ float theta = 0.0f; // Rotor angle (electrical)
   MX_TIM6_Init();
   MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
-  HAL_TIM_Base_Start_IT(&htim6);
   HAL_UART_Receive_IT(&huart3, &uart_rx_byte, 1);
   Encoder_Init(&encoder, &htim2, ENCODER_PPR);
   Encoder_Start(&encoder);
+  FOC_InitCycleCounter();
+  foc_isr_budget_cycles = (uint32_t)((SystemCoreClock / (uint32_t)PWM_FREQUENCY_HZ) * 0.75f);
+  if (foc_isr_budget_cycles == 0U) {
+      foc_isr_budget_cycles = 6000U;
+  }
 
   CurrentSense_Init();
   CurrentSense_Start();
+  // Start Counters (Master + Slaves)
+  HAL_HRTIM_WaveformCountStart(&hhrtim1, HRTIM_TIMERID_MASTER | 
+                                         HRTIM_TIMERID_TIMER_A | 
+                                         HRTIM_TIMERID_TIMER_C | 
+                                         HRTIM_TIMERID_TIMER_D);
+  CurrentSense_Calibrate();
+    // Start Counters (Master + Slaves)
+  HAL_HRTIM_WaveformCountStop(&hhrtim1, HRTIM_TIMERID_MASTER | 
+                                         HRTIM_TIMERID_TIMER_A | 
+                                         HRTIM_TIMERID_TIMER_C | 
+                                         HRTIM_TIMERID_TIMER_D);
+  // Initialize FOC control module
+  FOC_Init();
+  FOC_SetSlipCompensation(1U, 20.0f, 0.2f);
+
+  // Initialize SVPWM module for synchronized current sampling
+  SVPWM_Config_t svpwm_config = {
+      .min_duty_window = 0.15f,        // 15% minimum low-side ON time for valid measurement
+      .trigger_offset = 0.05f,         // 5% offset from duty edge for ADC settling
+      .max_modulation_index = 0.8165f, // Standard SVPWM max (sqrt(3)/2)
+      .pwm_period_ticks = PWM_PERIOD_CYCLES
+  };
+  SVPWM_Init(&svpwm_config);
 
   // Build sine lookup table
   build_sine_lut();
@@ -391,19 +1338,17 @@ float theta = 0.0f; // Rotor angle (electrical)
   HAL_DMA_Start_IT(&hdma_hrtim1_d, (uint32_t)dma_buffer_phase_c, (uint32_t)&HRTIM1->sTimerxRegs[HRTIM_TIMERINDEX_TIMER_D].CMP1xR, BUFF_LEN);
 
   // Start HRTIM timers for 3-phase PWM generation (with ZERO amplitude initially)
-  Motor_SetAmplitude(0.0f);  // Set to zero FIRST
-  Motor_SetFrequency(50);
-  Motor_Start();
+  // Motor_SetAmplitude(0.0f);  // Set to zero FIRST
+  // Motor_SetFrequency(50);
+  // Motor_Start();
   
-  // IMPORTANT: Calibrate current sensors with NO current flowing
-  // HRTIM must be running to trigger ADC conversions, but amplitude is zero
-  HAL_Delay(50);  // Wait for ADC conversions to stabilize
-  CurrentSense_Calibrate(100);
+
+  // Motor_SetAmplitude(0.94);
   
-  // Now set the actual operating amplitude
-  Motor_SetAmplitude(0.94);
+  // Start DMA-based telemetry transmission
+  Telemetry_Start();
   
-  // Example_VF_Control_Ramp();
+  // HAL_TIM_Base_Start_IT(&htim6);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -414,36 +1359,13 @@ float theta = 0.0f; // Rotor angle (electrical)
 
     /* USER CODE BEGIN 3 */
 
-    uint32_t now_ms = HAL_GetTick();
-
     if (uart_new_cmd) {
         Process_Command(uart_rx_buffer);
         uart_new_cmd = 0;
     }
 
-    // Periodically send telemetry
-    static uint32_t last_telemetry_ms = 0;
-    if (now_ms - last_telemetry_ms > 100) { // 10Hz
-        char buffer[64];
-        snprintf(buffer, sizeof(buffer), "SPD:%.2f CUR:%.2f,%.2f\r\n", 
-                 Encoder_GetSpeedRpm(&encoder),
-                 currents.Ia, currents.Ib);
-        HAL_UART_Transmit(&huart3, (uint8_t*)buffer, strlen(buffer), 500);
-        last_telemetry_ms = now_ms;
-    }
-
-    // Encoder position is updated in TIM6 interrupt at 1kHz
-    theta = Encoder_GetElectricalAngleRad(&encoder, MOTOR_POLE_PAIRS);
-    
-    /* Read Phase Currents */
-    currents = CurrentSense_Read();
-    
-    /* Perform Clarke Transform (3-phase -> 2-phase stationary) */
-    clarke = Clarke_Transform(currents.Ia, currents.Ib); // Assumes Ic = -Ia - Ib
-    
-    /* Perform Park Transform (Stationary -> Rotating) */
-    // Note: 'theta' should be provided by the position sensor or observer
-    park = Park_Transform(clarke.alpha, clarke.beta, sinf(theta), cosf(theta));
+    // FOC_BringupUpdate(now_ms);
+    // FOC_AutocalUpdate(now_ms);
 
     if (ADC_Measure_VTSO() > 100.0f) {
         Motor_Stop();
@@ -536,7 +1458,7 @@ static void MX_ADC1_Init(void)
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.GainCompensation = 0;
   hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
-  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;
   hadc1.Init.LowPowerAutoWait = DISABLE;
   hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.NbrOfConversion = 1;
@@ -563,7 +1485,7 @@ static void MX_ADC1_Init(void)
   */
   sConfigInjected.InjectedChannel = ADC_CHANNEL_3;
   sConfigInjected.InjectedRank = ADC_INJECTED_RANK_1;
-  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_640CYCLES_5;
+  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_24CYCLES_5;
   sConfigInjected.InjectedSingleDiff = ADC_SINGLE_ENDED;
   sConfigInjected.InjectedOffsetNumber = ADC_OFFSET_NONE;
   sConfigInjected.InjectedOffset = 0;
@@ -619,7 +1541,7 @@ static void MX_ADC2_Init(void)
   hadc2.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc2.Init.GainCompensation = 0;
   hadc2.Init.ScanConvMode = ADC_SCAN_ENABLE;
-  hadc2.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  hadc2.Init.EOCSelection = ADC_EOC_SEQ_CONV;
   hadc2.Init.LowPowerAutoWait = DISABLE;
   hadc2.Init.ContinuousConvMode = DISABLE;
   hadc2.Init.NbrOfConversion = 1;
@@ -636,7 +1558,7 @@ static void MX_ADC2_Init(void)
   */
   sConfigInjected.InjectedChannel = ADC_CHANNEL_3;
   sConfigInjected.InjectedRank = ADC_INJECTED_RANK_1;
-  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_640CYCLES_5;
+  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_24CYCLES_5;
   sConfigInjected.InjectedSingleDiff = ADC_SINGLE_ENDED;
   sConfigInjected.InjectedOffsetNumber = ADC_OFFSET_NONE;
   sConfigInjected.InjectedOffset = 0;
@@ -829,16 +1751,16 @@ static void MX_HRTIM1_Init(void)
   }
   HAL_HRTIM_FaultModeCtl(&hhrtim1, HRTIM_FAULT_3, HRTIM_FAULTMODECTL_ENABLED);
   pADCTriggerCfg.UpdateSource = HRTIM_ADCTRIGGERUPDATE_MASTER;
-  pADCTriggerCfg.Trigger = HRTIM_ADCTRIGGEREVENT24_MASTER_PERIOD;
+  pADCTriggerCfg.Trigger = HRTIM_ADCTRIGGEREVENT24_MASTER_CMP1;
   if (HAL_HRTIM_ADCTriggerConfig(&hhrtim1, HRTIM_ADCTRIGGER_2, &pADCTriggerCfg) != HAL_OK)
   {
     Error_Handler();
   }
-  if (HAL_HRTIM_ADCPostScalerConfig(&hhrtim1, HRTIM_ADCTRIGGER_2, 0x0) != HAL_OK)
+  if (HAL_HRTIM_ADCPostScalerConfig(&hhrtim1, HRTIM_ADCTRIGGER_2, 0) != HAL_OK)
   {
     Error_Handler();
   }
-  if (HAL_HRTIM_ADCPostScalerConfig(&hhrtim1, HRTIM_ADCTRIGGER_2, 0x0) != HAL_OK)
+  if (HAL_HRTIM_ADCPostScalerConfig(&hhrtim1, HRTIM_ADCTRIGGER_2, 0) != HAL_OK)
   {
     Error_Handler();
   }
@@ -1050,11 +1972,11 @@ static void MX_TIM2_Init(void)
   sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
   sConfig.IC1Polarity = TIM_ICPOLARITY_FALLING;
   sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
-  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV8;
   sConfig.IC1Filter = 15;
   sConfig.IC2Polarity = TIM_ICPOLARITY_FALLING;
   sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
-  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV8;
   sConfig.IC2Filter = 15;
   if (HAL_TIM_Encoder_Init(&htim2, &sConfig) != HAL_OK)
   {
@@ -1069,7 +1991,7 @@ static void MX_TIM2_Init(void)
   sEncoderIndexConfig.Polarity = TIM_ENCODERINDEX_POLARITY_NONINVERTED;
   sEncoderIndexConfig.Prescaler = TIM_ENCODERINDEX_PRESCALER_DIV1;
   sEncoderIndexConfig.Filter = 15;
-  sEncoderIndexConfig.FirstIndexEnable = DISABLE;
+  sEncoderIndexConfig.FirstIndexEnable = ENABLE;
   sEncoderIndexConfig.Position = TIM_ENCODERINDEX_POSITION_00;
   sEncoderIndexConfig.Direction = TIM_ENCODERINDEX_DIRECTION_UP_DOWN;
   if (HAL_TIMEx_ConfigEncoderIndex(&htim2, &sEncoderIndexConfig) != HAL_OK)
@@ -1176,6 +2098,7 @@ static void MX_DMA_Init(void)
   /* DMA controller clock enable */
   __HAL_RCC_DMAMUX1_CLK_ENABLE();
   __HAL_RCC_DMA1_CLK_ENABLE();
+  __HAL_RCC_DMA2_CLK_ENABLE();
 
   /* DMA interrupt init */
   /* DMA1_Channel1_IRQn interrupt configuration */
@@ -1187,6 +2110,9 @@ static void MX_DMA_Init(void)
   /* DMA1_Channel3_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
+  /* DMA2_Channel4_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Channel4_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Channel4_IRQn);
 
 }
 
@@ -1211,17 +2137,17 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, RELAY10_Pin|RELAY9_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, RELAY10_Pin|RELAY9_Pin|GPIO_PIN_9|RELAY12_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOA, RELAY6_Pin|RELAY1_Pin|RELAY7_Pin|RELAY8_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, RELAY4_Pin|RELAY5_Pin|RELAY2_Pin|RELAY3_Pin
-                          |RELAY6_Pin|RELAY11_Pin, GPIO_PIN_RESET);
+                          |RELAY11_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, RELAY1_Pin|RELAY7_Pin|RELAY8_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pins : RELAY10_Pin RELAY9_Pin */
-  GPIO_InitStruct.Pin = RELAY10_Pin|RELAY9_Pin;
+  /*Configure GPIO pins : RELAY10_Pin RELAY9_Pin PC9 RELAY12_Pin */
+  GPIO_InitStruct.Pin = RELAY10_Pin|RELAY9_Pin|GPIO_PIN_9|RELAY12_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -1229,12 +2155,10 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pins : PC15 PC0 PC1 PC2
                            PC3 PC4 PC5 PC6
-                           PC7 PC8 PC9 PC11
-                           PC12 */
+                           PC7 PC8 PC11 */
   GPIO_InitStruct.Pin = GPIO_PIN_15|GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2
                           |GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6
-                          |GPIO_PIN_7|GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_11
-                          |GPIO_PIN_12;
+                          |GPIO_PIN_7|GPIO_PIN_8|GPIO_PIN_11;
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
@@ -1245,27 +2169,27 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOG, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PA4 PA5 */
-  GPIO_InitStruct.Pin = GPIO_PIN_4|GPIO_PIN_5;
+  /*Configure GPIO pin : PA4 */
+  GPIO_InitStruct.Pin = GPIO_PIN_4;
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : RELAY4_Pin RELAY5_Pin RELAY2_Pin RELAY3_Pin
-                           RELAY6_Pin RELAY11_Pin */
-  GPIO_InitStruct.Pin = RELAY4_Pin|RELAY5_Pin|RELAY2_Pin|RELAY3_Pin
-                          |RELAY6_Pin|RELAY11_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : RELAY1_Pin RELAY7_Pin RELAY8_Pin */
-  GPIO_InitStruct.Pin = RELAY1_Pin|RELAY7_Pin|RELAY8_Pin;
+  /*Configure GPIO pins : RELAY6_Pin RELAY1_Pin RELAY7_Pin RELAY8_Pin */
+  GPIO_InitStruct.Pin = RELAY6_Pin|RELAY1_Pin|RELAY7_Pin|RELAY8_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : RELAY4_Pin RELAY5_Pin RELAY2_Pin RELAY3_Pin
+                           RELAY11_Pin */
+  GPIO_InitStruct.Pin = RELAY4_Pin|RELAY5_Pin|RELAY2_Pin|RELAY3_Pin
+                          |RELAY11_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PD2 */
   GPIO_InitStruct.Pin = GPIO_PIN_2;
@@ -1273,8 +2197,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PB4 PB8 PB9 */
-  GPIO_InitStruct.Pin = GPIO_PIN_4|GPIO_PIN_8|GPIO_PIN_9;
+  /*Configure GPIO pins : PB4 PB6 PB8 PB9 */
+  GPIO_InitStruct.Pin = GPIO_PIN_4|GPIO_PIN_6|GPIO_PIN_8|GPIO_PIN_9;
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
@@ -1285,12 +2209,250 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
+{
+  if (hadc->Instance != ADC1) {
+      return;
+  }
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+  uint32_t start_cycles = DWT->CYCCNT;
+
+  if (__HAL_ADC_GET_FLAG(hadc, ADC_FLAG_JEOS) == RESET) {
+      foc_fault_adc_sync = 1U;
+      if (++foc_invalid_sample_count > 1U) {
+          FOC_EnterSafeState();
+      }
+      return;
+  }
+
+  foc_invalid_sample_count = 0U;
+  foc_fault_adc_sync = 0U;
+
+   
+  // 1. Update open-loop FOC state machine (synchronized with ADC measurements)
+  FOC_UpdateOpenLoop(CURRENT_LOOP_TS_SEC);
+
+  // 2. Read currents using SVPWM-based shunt selection
+  CurSense_Data_t current_sample;
+  if (svpwm_enabled && svpwm_output.valid) {
+      current_sample = CurrentSense_ReadWithShuntSelection(svpwm_output.shunt1, svpwm_output.shunt2);
+  } else {
+      current_sample = CurrentSense_Read();
+  }
+  currents = current_sample;  // Store for telemetry (accessed by TIM6)
+
+  // 3. Read encoder position ONLY if closed-loop FOC needs it (encoder updates moved to TIM6)
+  FOC_Mode_t foc_mode = FOC_GetMode();
+  if (control_mode == CONTROL_FOC && foc_mode == FOC_MODE_CLOSED_LOOP) {
+      // Quick position read for closed-loop control (no velocity calculation)
+      if (encoder_index_locked != 0U) {
+          theta = WrapAngle0To2Pi(Encoder_GetElectricalAngleRad(&encoder, MOTOR_POLE_PAIRS) + encoder_elec_offset_rad);
+      } else {
+          theta = 0.0f;
+      }
+  }
+
+  
+  // 4. FOC Control (Clarke, Park, PI, Inverse Park done internally in FOC_Update)
+  if (control_mode == CONTROL_FOC) {
+      // Check if we can run FOC (open-loop always runs, closed-loop needs encoder)
+      uint8_t can_run_foc = (foc_mode == FOC_MODE_OPEN_LOOP) || 
+                            (foc_mode == FOC_MODE_CLOSED_LOOP && encoder_index_locked != 0U);
+      
+      if (can_run_foc) {
+          // FOC_Update computes: θ_sync = θ_rotor + θ_slip (IRFOC)
+          // - Id controls flux (ψ_r)
+          // - Iq controls torque
+          // - ω_slip computed from Iq and ψ_r: ω_slip = (Lm/ψ_r) * (Rr/Lr) * Iq
+          // - θ_slip integrated from ω_slip
+          Clarke_Out_t v_alphabeta = FOC_Update(current_sample, theta, CURRENT_LOOP_TS_SEC);
+          foc_voltage_alpha = v_alphabeta.alpha;
+          foc_voltage_beta = v_alphabeta.beta;
+          
+          // Calculate SVPWM output for next cycle (sector, shunt selection, trigger timing)
+          svpwm_output = SVPWM_Calculate(v_alphabeta.alpha, v_alphabeta.beta);
+          
+          // 5. Apply PWM voltages
+          PWM_ApplyFocVoltage(v_alphabeta.alpha, v_alphabeta.beta);
+      } else {
+          foc_voltage_alpha = 0.0f;
+          foc_voltage_beta = 0.0f;
+          PWM_SetNeutralDuty();
+      }
+  }
+
+  foc_isr_cycles_last = DWT->CYCCNT - start_cycles;
+  if (foc_isr_cycles_last > foc_isr_budget_cycles) {
+      foc_fault_overrun = 1U;
+      FOC_EnterSafeState();
+  }
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+}
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   if (htim->Instance == TIM6) {
-    Encoder_Update(&encoder, 0.001f);
+    // ========== 1 kHz telemetry and diagnostics ==========
+    
+    // 1. Update encoder (velocity/speed calculation at 1kHz is sufficient)
+    //    Position reads happen at 20kHz in ADC callback only for closed-loop
+    static const float TIM6_TS_SEC = 0.001f;  // 1kHz = 1ms
+    Encoder_Update(&encoder, TIM6_TS_SEC);
+    encoder_index_locked = Encoder_HasIndex(&encoder);
+    theta_mech = Encoder_GetMechanicalAngleRad(&encoder);
+    
+    // 2. Snapshot data from control loop (use values computed by FOC_Update @ 20kHz)
+    FOC_Control_t *foc_state = FOC_GetState();
+    clarke = foc_state->i_clarke;  // Clarke transform from FOC_Update (no recomputation!)
+    park = foc_state->i_park;      // Park transform from FOC_Update (no recomputation!)
+    
+    // Note: FOC_Update already computes Clarke and Park at 20kHz
+    // We just copy the latest values here for telemetry - much faster!
+    
+    // Telemetry transmission is handled by UART DMA callbacks
   }
+
+}
+
+/**
+ * @brief Prepare telemetry buffer with latest data
+ * @return Actual length of telemetry string (excluding null terminator)
+ */
+/**
+ * @brief Calculate CRC8 checksum for binary telemetry
+ */
+static uint8_t Telemetry_CRC8(const uint8_t *data, uint16_t length)
+{
+    uint8_t crc = 0xFF;
+    for (uint16_t i = 0; i < length; i++) {
+        crc ^= data[i];
+        for (uint8_t j = 0; j < 8; j++) {
+            if (crc & 0x80) {
+                crc = (crc << 1) ^ 0x31;  // Polynomial: x^8 + x^5 + x^4 + 1
+            } else {
+                crc = crc << 1;
+            }
+        }
+    }
+    return crc;
+}
+
+/**
+ * @brief Prepare binary telemetry packet (single sample)
+ */
+static uint16_t prepare_telemetry_binary(void)
+{
+    Telemetry_Binary_t packet;
+    CurSense_Data_t currents_snapshot;
+    float speed_snapshot;
+    uint32_t timestamp_ms;
+
+    // Snapshot data safely
+    currents_snapshot = currents;
+    speed_snapshot = Encoder_GetSpeedRpm(&encoder);
+    timestamp_ms = HAL_GetTick();
+
+    // Pack binary structure
+    packet.header = 0xAA;                              // Sync marker
+    packet.format_version = 0x01;                      // Version 1
+    packet.ia = (int16_t)(currents_snapshot.Ia * 1000.0f);  // Convert A to mA
+    packet.ib = (int16_t)(currents_snapshot.Ib * 1000.0f);
+    packet.ic = (int16_t)(currents_snapshot.Ic * 1000.0f);
+    packet.speed_rpm = (int16_t)(speed_snapshot);     // RPM as signed int16
+    packet.timestamp_ms = (uint16_t)(timestamp_ms & 0xFFFF);  // 16-bit rolling timestamp
+    packet.flags = control_mode | (foc_fault_overrun << 1) | (foc_fault_adc_sync << 2);
+    packet.checksum = Telemetry_CRC8((uint8_t*)&packet, sizeof(packet) - 1);
+
+    // Copy to buffer
+    uint16_t packet_len = sizeof(Telemetry_Binary_t);
+    if (packet_len <= TELEMETRY_BUFFER_SIZE) {
+        memcpy(telemetry_buffer, (uint8_t*)&packet, packet_len);
+        return packet_len;
+    }
+    return 0;
+}
+
+/**
+ * @brief Prepare burst telemetry packet (5 consecutive samples for waveform)
+ */
+static uint16_t prepare_telemetry_ascii(void)
+{
+    CurSense_Data_t currents_snapshot;
+    Clarke_Out_t clarke_snapshot;
+    Park_Out_t park_snapshot;
+    float theta_snapshot;
+    float theta_mech_snapshot;
+
+    currents_snapshot = currents;
+    clarke_snapshot = clarke;
+    park_snapshot = park;
+    theta_snapshot = theta;
+    theta_mech_snapshot = theta_mech;
+
+    int len = snprintf((char*)telemetry_buffer, TELEMETRY_BUFFER_SIZE, 
+                       "SPD:%.2f CUR:%.2f,%.2f,%.2f CLA:%.2f,%.2f PARK:%.2f,%.2f TH_M:%.2f TH_E:%.2f\r\n",
+                       Encoder_GetSpeedRpm(&encoder),
+                       currents_snapshot.Ia, currents_snapshot.Ib, currents_snapshot.Ic,
+                       clarke_snapshot.alpha, clarke_snapshot.beta,
+                       park_snapshot.d, park_snapshot.q,
+                       theta_mech_snapshot,
+                       theta_snapshot);
+
+    // Return actual length, clamped to buffer size
+    return (len > 0 && len < TELEMETRY_BUFFER_SIZE) ? (uint16_t)len : 0;
+}
+
+/**
+ * @brief Prepare telemetry data in selected format
+ */
+static uint16_t prepare_telemetry_data(void)
+{
+    uint16_t length;
+    if (telemetry_format == TELEMETRY_FORMAT_BINARY) {
+        length = prepare_telemetry_binary();
+    } else {
+        length = prepare_telemetry_ascii();
+    }
+ 
+    return length;
+}
+
+/**
+ * @brief Start DMA-based telemetry transmission
+ */
+void Telemetry_Start(void)
+{
+  if (telemetry_enabled == 0U) {
+    return;
+  }
+
+  if (huart3.gState != HAL_UART_STATE_READY) {
+    return;
+  }
+
+  // Prepare first telemetry data
+  uint16_t length = prepare_telemetry_data();
+
+  // Start DMA transmission with actual data length
+  if (length > 0U) {
+    HAL_UART_Transmit_DMA(&huart3, telemetry_buffer, length);
+  }
+}
+
+/**
+ * @brief UART TX Complete Callback - DMA finished sending buffer
+ * @note Automatically prepares new data and retriggers transmission when enabled
+ */
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART3) {
+    if (telemetry_enabled != 0U) {
+      uint16_t length = prepare_telemetry_data();
+      if (length > 0) {
+        HAL_UART_Transmit_DMA(&huart3, telemetry_buffer, length);
+      }
+    }
+    }
 }
 
 /**
@@ -1327,9 +2489,12 @@ void Motor_Start(void)
      All slave timers (A, C, D) are configured to reset on Master Period, 
      ensuring Center-Aligned synchronized PWM.
   */
-  __HAL_HRTIM_TIMER_ENABLE_DMA(&hhrtim1, HRTIM_TIMERINDEX_TIMER_A, HRTIM_TIM_DMA_RST);
-  __HAL_HRTIM_TIMER_ENABLE_DMA(&hhrtim1, HRTIM_TIMERINDEX_TIMER_C, HRTIM_TIM_DMA_RST);
-  __HAL_HRTIM_TIMER_ENABLE_DMA(&hhrtim1, HRTIM_TIMERINDEX_TIMER_D, HRTIM_TIM_DMA_RST);
+  if (control_mode == CONTROL_FOC) {
+      PWM_DisableDmaRequests();
+      PWM_SetNeutralDuty();
+  } else {
+      PWM_EnableDmaRequests();
+  }
   
   // Enable Outputs
   HAL_HRTIM_WaveformOutputStart(&hhrtim1, HRTIM_OUTPUT_TA1 | HRTIM_OUTPUT_TA2 |
@@ -1383,6 +2548,110 @@ void Motor_SetAmplitude(float amplitude)
 {
   motor_ctrl.amplitude = amplitude;
   set_modulation_index(amplitude);
+}
+
+/**
+ * @brief Enable FOC control mode
+ */
+void Motor_EnableFOC(void)
+{
+  foc_fault_overrun = 0U;
+  foc_fault_adc_sync = 0U;
+  foc_invalid_sample_count = 0U;
+  PWM_DisableDmaRequests();
+  PWM_SetNeutralDuty();
+  control_mode = CONTROL_FOC;
+  FOC_Enable();
+}
+
+/**
+ * @brief Disable FOC control and return to V/F mode
+ */
+void Motor_DisableFOC(void)
+{
+  FOC_Disable();
+  control_mode = CONTROL_VF;
+  fill_block(0, BUFF_LEN);
+  PWM_EnableDmaRequests();
+}
+
+/**
+ * @brief Set FOC direct axis (flux) current reference
+ * @param Id_ref Current in Amperes
+ */
+void Motor_SetFOC_Id(float Id_ref)
+{
+  FOC_SetIdReference(Id_ref);
+}
+
+/**
+ * @brief Set FOC quadrature axis (torque) current reference
+ * @param Iq_ref Current in Amperes
+ */
+void Motor_SetFOC_Iq(float Iq_ref)
+{
+  FOC_SetIqReference(Iq_ref);
+}
+
+/**
+ * @brief Start open-loop FOC with flux alignment and frequency ramp
+ * 
+ * Startup sequence:
+ * 1. Flux Alignment (500 ms) - Ramp Id current to magnetize rotor
+ * 2. Flux Stabilization (200 ms) - Allow flux to build up
+ * 3. Frequency Ramp (3000 ms) - Accelerate to 10 Hz
+ * 4. Steady State - Run at constant frequency until encoder locks
+ */
+void Motor_StartOpenLoopFOC(void)
+{
+  // Stop any previous control
+  Motor_DisableFOC();
+  
+  // Ensure PWM is in direct control mode (not DMA)
+  PWM_DisableDmaRequests();
+  PWM_SetNeutralDuty();
+
+  // Ensure PWM outputs and counters are running (ADC injected triggers depend on HRTIM)
+  Motor_Start();
+
+  // Ensure injected ADC conversions are armed (in case they were stopped)
+  // CurrentSense_Start(); // do not uncomment this 
+  
+  // Configure and start open-loop FOC sequence
+  // Parameters: align_time_ms, ramp_time_ms, target_freq_hz, flux_id_a
+  FOC_StartOpenLoop(
+      500,    // 500 ms flux alignment
+      6000,   // 6 second frequency ramp
+      5.0f,   // Target 5 Hz (300 RPM for 1 pole pair)
+      0.5f    // 0.5A magnetizing current
+  );
+  
+  // Enable FOC control in open-loop mode
+  control_mode = CONTROL_FOC;
+  FOC_SetMode(FOC_MODE_OPEN_LOOP);
+  FOC_Enable();
+  
+  // Start TIM6 for state machine updates (1 kHz)
+  HAL_TIM_Base_Start_IT(&htim6);
+}
+
+/**
+ * @brief Transition from open-loop to closed-loop FOC
+ * Should be called once encoder is locked and motor is rotating
+ */
+void Motor_TransitionToClosedLoop(void)
+{
+  if (FOC_GetOpenLoopState() == OPENLOOP_COMPLETE) {
+    // Switch to closed-loop mode (encoder index not required for induction IRFOC)
+    FOC_SetMode(FOC_MODE_CLOSED_LOOP);
+
+    if (encoder_index_locked == 0U) {
+      HAL_UART_Transmit(&huart3, (uint8_t*)"Warning: encoder index not locked\r\n", 38, 200);
+    }
+
+    // Optionally stop TIM6 updates (open-loop state machine)
+    // HAL_TIM_Base_Stop_IT(&htim6);
+  }
 }
 
 /* USER CODE END 4 */

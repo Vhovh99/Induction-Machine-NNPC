@@ -61,6 +61,10 @@ void Motor_Start(void);
 void Motor_Stop(void);
 void Motor_SetFrequency(float frequency);
 void Motor_SetAmplitude(float amplitude);
+void Motor_EnableFOC(void);
+void Motor_DisableFOC(void);
+void Motor_SetFOC_Id(float Id_ref);
+void Motor_SetFOC_Iq(float Iq_ref);
 void Motor_Update(void);
 void Update_3Phase_PWM(float phase, float amplitude);
 
@@ -75,6 +79,8 @@ void Update_3Phase_PWM(float phase, float amplitude);
 #define RCC_OSC_IN_GPIO_Port GPIOF
 #define RCC_OSC_OUT_Pin GPIO_PIN_1
 #define RCC_OSC_OUT_GPIO_Port GPIOF
+#define RELAY6_Pin GPIO_PIN_5
+#define RELAY6_GPIO_Port GPIOA
 #define RELAY4_Pin GPIO_PIN_1
 #define RELAY4_GPIO_Port GPIOB
 #define RELAY5_Pin GPIO_PIN_2
@@ -85,12 +91,12 @@ void Update_3Phase_PWM(float phase, float amplitude);
 #define RELAY7_GPIO_Port GPIOA
 #define RELAY8_Pin GPIO_PIN_12
 #define RELAY8_GPIO_Port GPIOA
+#define RELAY12_Pin GPIO_PIN_12
+#define RELAY12_GPIO_Port GPIOC
 #define RELAY2_Pin GPIO_PIN_3
 #define RELAY2_GPIO_Port GPIOB
 #define RELAY3_Pin GPIO_PIN_5
 #define RELAY3_GPIO_Port GPIOB
-#define RELAY6_Pin GPIO_PIN_6
-#define RELAY6_GPIO_Port GPIOB
 #define RELAY11_Pin GPIO_PIN_7
 #define RELAY11_GPIO_Port GPIOB
 

@@ -14,6 +14,8 @@ typedef struct {
   float speed_rpm;
   float speed_rpm_filtered;
   uint8_t index_found;
+  int32_t index_offset_counts;  // position_counts at index (or calibrated offset)
+  int32_t position_zeroed;      // optional cached value
 } Encoder_Handle_t;
 
 void Encoder_Init(Encoder_Handle_t *enc, TIM_HandleTypeDef *htim, uint32_t ppr);

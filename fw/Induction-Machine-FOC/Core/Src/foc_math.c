@@ -1,11 +1,11 @@
 #include "foc_math.h"
 
-Clarke_Out_t Clarke_Transform(float Ia, float Ib) {
+Clarke_Out_t Clarke_Transform(float Ia, float Ib, float Ic) {
     Clarke_Out_t out;
-    // I_alpha = Ia
-    // I_beta = 1/sqrt(3) * (Ia + 2*Ib)
-    out.alpha = Ia;
-    out.beta = 0.57735026919f * (Ia + 2.0f * Ib);
+    // I_alpha = Ia - (1/2) * Ib - (1/2)*Ic
+    // I_beta = (√3/2)*Ib - (√3/2)*Ic
+    out.alpha = Ia - 0.5f * Ib - 0.5f * Ic;
+    out.beta = 0.866025403784f * (Ib - Ic);  // √3/2 ≈ 0.866025403784
     return out;
 }
 

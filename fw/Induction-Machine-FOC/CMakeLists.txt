@@ -7,11 +7,15 @@ cmake_minimum_required(VERSION 3.22)
 # User is free to modify the file as much as necessary
 #
 
+# FPU (Floating Point Unit) configuration - MUST BE BEFORE project()
+# This enables __FPU_USED detection during compiler feature tests
+set(CMAKE_C_FLAGS "-mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard")
+set(CMAKE_ASM_FLAGS "-mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard")
+
 # Setup compiler settings
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
-
 
 # Define the build type
 if(NOT CMAKE_BUILD_TYPE)
@@ -51,7 +55,11 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/foc_math.c
     Core/Src/relay_control.c
     Core/Src/encoder.c
+    Core/Src/foc_control.c
+    Core/Src/svpwm.c
 )
+
+set(CMAKE_C_LINK_FLAGS "${CMAKE_C_LINK_FLAGS} -u _printf_float")
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
@@ -60,6 +68,9 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add project symbols (macros)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
+    # FPU support - explicitly enable FPU usage
+    __FPU_USED=1
+    __FPU_PRESENT=1
     # Add user defined symbols
 )
 

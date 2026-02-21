@@ -56,11 +56,14 @@ extern UART_HandleTypeDef huart3;
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
+extern ADC_HandleTypeDef hadc1;
+extern ADC_HandleTypeDef hadc2;
 extern DMA_HandleTypeDef hdma_hrtim1_a;
 extern DMA_HandleTypeDef hdma_hrtim1_c;
 extern DMA_HandleTypeDef hdma_hrtim1_d;
 extern HRTIM_HandleTypeDef hhrtim1;
 extern TIM_HandleTypeDef htim6;
+extern DMA_HandleTypeDef hdma_usart3_tx;
 extern UART_HandleTypeDef huart3;
 /* USER CODE BEGIN EV */
 
@@ -248,6 +251,21 @@ void DMA1_Channel3_IRQHandler(void)
 }
 
 /**
+  * @brief This function handles ADC1 and ADC2 global interrupt.
+  */
+void ADC1_2_IRQHandler(void)
+{
+  /* USER CODE BEGIN ADC1_2_IRQn 0 */
+
+  /* USER CODE END ADC1_2_IRQn 0 */
+  HAL_ADC_IRQHandler(&hadc1);
+  HAL_ADC_IRQHandler(&hadc2);
+  /* USER CODE BEGIN ADC1_2_IRQn 1 */
+
+  /* USER CODE END ADC1_2_IRQn 1 */
+}
+
+/**
   * @brief This function handles USART3 global interrupt / USART3 wake-up interrupt through EXTI line 28.
   */
 void USART3_IRQHandler(void)
@@ -276,16 +294,30 @@ void TIM6_DAC_IRQHandler(void)
 }
 
 /**
+  * @brief This function handles DMA2 channel4 global interrupt.
+  */
+void DMA2_Channel4_IRQHandler(void)
+{
+  /* USER CODE BEGIN DMA2_Channel4_IRQn 0 */
+
+  /* USER CODE END DMA2_Channel4_IRQn 0 */
+  HAL_DMA_IRQHandler(&hdma_usart3_tx);
+  /* USER CODE BEGIN DMA2_Channel4_IRQn 1 */
+
+  /* USER CODE END DMA2_Channel4_IRQn 1 */
+}
+
+/**
   * @brief This function handles HRTIM master timer global interrupt.
   */
 void HRTIM1_Master_IRQHandler(void)
 {
   /* USER CODE BEGIN HRTIM1_Master_IRQn 0 */
-  
+
   /* USER CODE END HRTIM1_Master_IRQn 0 */
   HAL_HRTIM_IRQHandler(&hhrtim1,HRTIM_TIMERINDEX_MASTER);
   /* USER CODE BEGIN HRTIM1_Master_IRQn 1 */
-  
+
   /* USER CODE END HRTIM1_Master_IRQn 1 */
 }
 

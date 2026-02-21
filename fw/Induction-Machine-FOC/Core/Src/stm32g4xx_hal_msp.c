@@ -29,6 +29,8 @@ extern DMA_HandleTypeDef hdma_hrtim1_c;
 
 extern DMA_HandleTypeDef hdma_hrtim1_d;
 
+extern DMA_HandleTypeDef hdma_usart3_tx;
+
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN TD */
 
@@ -131,6 +133,9 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef* hadc)
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+    /* ADC1 interrupt Init */
+    HAL_NVIC_SetPriority(ADC1_2_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(ADC1_2_IRQn);
     /* USER CODE BEGIN ADC1_MspInit 1 */
 
     /* USER CODE END ADC1_MspInit 1 */
@@ -166,6 +171,9 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef* hadc)
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+    /* ADC2 interrupt Init */
+    HAL_NVIC_SetPriority(ADC1_2_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(ADC1_2_IRQn);
     /* USER CODE BEGIN ADC2_MspInit 1 */
 
     /* USER CODE END ADC2_MspInit 1 */
@@ -229,6 +237,15 @@ void HAL_ADC_MspDeInit(ADC_HandleTypeDef* hadc)
     */
     HAL_GPIO_DeInit(GPIOA, GPIO_PIN_2|GPIO_PIN_3);
 
+    /* ADC1 interrupt DeInit */
+    /* USER CODE BEGIN ADC1:ADC1_2_IRQn disable */
+    /**
+    * Uncomment the line below to disable the "ADC1_2_IRQn" interrupt
+    * Be aware, disabling shared interrupt may affect other IPs
+    */
+    /* HAL_NVIC_DisableIRQ(ADC1_2_IRQn); */
+    /* USER CODE END ADC1:ADC1_2_IRQn disable */
+
     /* USER CODE BEGIN ADC1_MspDeInit 1 */
 
     /* USER CODE END ADC1_MspDeInit 1 */
@@ -249,6 +266,15 @@ void HAL_ADC_MspDeInit(ADC_HandleTypeDef* hadc)
     PA7     ------> ADC2_IN4
     */
     HAL_GPIO_DeInit(GPIOA, GPIO_PIN_6|GPIO_PIN_7);
+
+    /* ADC2 interrupt DeInit */
+    /* USER CODE BEGIN ADC2:ADC1_2_IRQn disable */
+    /**
+    * Uncomment the line below to disable the "ADC1_2_IRQn" interrupt
+    * Be aware, disabling shared interrupt may affect other IPs
+    */
+    /* HAL_NVIC_DisableIRQ(ADC1_2_IRQn); */
+    /* USER CODE END ADC2:ADC1_2_IRQn disable */
 
     /* USER CODE BEGIN ADC2_MspDeInit 1 */
 
@@ -554,7 +580,7 @@ void HAL_TIM_Base_MspInit(TIM_HandleTypeDef* htim_base)
     /* Peripheral clock enable */
     __HAL_RCC_TIM6_CLK_ENABLE();
     /* TIM6 interrupt Init */
-    HAL_NVIC_SetPriority(TIM6_DAC_IRQn, 0, 0);
+    HAL_NVIC_SetPriority(TIM6_DAC_IRQn, 6, 0);
     HAL_NVIC_EnableIRQ(TIM6_DAC_IRQn);
     /* USER CODE BEGIN TIM6_MspInit 1 */
 
@@ -667,6 +693,24 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
     GPIO_InitStruct.Alternate = GPIO_AF7_USART3;
     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
+    /* USART3 DMA Init */
+    /* USART3_TX Init */
+    hdma_usart3_tx.Instance = DMA2_Channel4;
+    hdma_usart3_tx.Init.Request = DMA_REQUEST_USART3_TX;
+    hdma_usart3_tx.Init.Direction = DMA_MEMORY_TO_PERIPH;
+    hdma_usart3_tx.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_usart3_tx.Init.MemInc = DMA_MINC_ENABLE;
+    hdma_usart3_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    hdma_usart3_tx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+    hdma_usart3_tx.Init.Mode = DMA_NORMAL;
+    hdma_usart3_tx.Init.Priority = DMA_PRIORITY_LOW;
+    if (HAL_DMA_Init(&hdma_usart3_tx) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    __HAL_LINKDMA(huart,hdmatx,hdma_usart3_tx);
+
     /* USART3 interrupt Init */
     HAL_NVIC_SetPriority(USART3_IRQn, 3, 0);
     HAL_NVIC_EnableIRQ(USART3_IRQn);
@@ -701,6 +745,9 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* huart)
     HAL_GPIO_DeInit(GPIOB, GPIO_PIN_11);
 
     HAL_GPIO_DeInit(GPIOC, GPIO_PIN_10);
+
+    /* USART3 DMA DeInit */
+    HAL_DMA_DeInit(huart->hdmatx);
 
     /* USART3 interrupt DeInit */
     HAL_NVIC_DisableIRQ(USART3_IRQn);
