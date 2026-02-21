@@ -119,6 +119,9 @@ DMA_HandleTypeDef hdma_usart3_tx;
 
 /* USER CODE BEGIN PV */
 
+/* Temperature Variable */
+float temperature_VTSO = 0.0f;
+
 /* DMA Double Buffers for 3 Phases */
 static uint32_t dma_buffer_phase_a[DMA_BUFFER_SIZE];
 static uint32_t dma_buffer_phase_b[DMA_BUFFER_SIZE];
@@ -664,7 +667,6 @@ void HAL_DMA_XferCpltCallback(DMA_HandleTypeDef *hdma)
 }
 
 float ADC_Measure_VTSO(void) {
-    float temperature = 0.0f;
     HAL_ADC_Start(&hadc3);
     if (HAL_ADC_PollForConversion(&hadc3, 200) == HAL_OK) {
         uint16_t adc_value = HAL_ADC_GetValue(&hadc3);
@@ -673,10 +675,10 @@ float ADC_Measure_VTSO(void) {
         
         // Calculate Temperature from Graph (Typ line):
         // y = kx + b; where k = 18.666666667f, b = 700 (mV at 0°C)
-        temperature = (voltage_mv - 700) / 18.666666667f; // in °C
+        temperature_VTSO = (voltage_mv - 700) / 18.666666667f; // in °C
     }
     HAL_ADC_Stop(&hadc3);
-    return temperature;
+    return temperature_VTSO;
 }
 
 
