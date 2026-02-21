@@ -56,6 +56,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/relay_control.c
     Core/Src/encoder.c
     Core/Src/foc_control.c
+    Core/Src/vf_control.c
     Core/Src/svpwm.c
 )
 
