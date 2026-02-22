@@ -28,15 +28,19 @@ typedef enum {
 } FOC_Mode_t;
 
 /**
- * @brief Open-Loop Startup State
+ * @brief Open-Loop Startup State (SIMPLIFIED)
+ * 
+ * Only essential states for encoder calibration and closed-loop transition:
+ * - IDLE: Not running
+ * - COMPLETE: Ready for closed-loop
+ * - WAIT_INDEX: Searching encoder index
+ * - CALIBRATE: Auto-calibrating offset
  */
 typedef enum {
     OPENLOOP_IDLE = 0,         // Not running
-    OPENLOOP_FLUX_ALIGN = 1,   // Flux alignment (stationary)
-    OPENLOOP_FLUX_RAMP = 2,    // Flux ramp to rated value
-    OPENLOOP_ACCEL = 3,        // Frequency ramp up
-    OPENLOOP_RUNNING = 4,      // Steady state open-loop
-    OPENLOOP_COMPLETE = 5      // Ready for closed-loop transition
+    OPENLOOP_WAIT_INDEX = 1,   // Slow rotation waiting for encoder index
+    OPENLOOP_CALIBRATE = 2,    // Automatic encoder offset calibration
+    OPENLOOP_COMPLETE = 3      // Ready for closed-loop transition
 } OpenLoop_State_t;
 
 /**
@@ -73,6 +77,7 @@ typedef struct {
     float omega_slip;           // Estimated slip electrical speed [rad/s]
     float theta_slip;           // Integrated slip angle [rad]
     float theta_sync;           // Last synchronous angle used by FOC [rad]
+    float theta_offset;         // Encoder offset for d-axis alignment [rad]
 
     // Motor parameters for rotor flux model
     float Rs;                   // Stator resistance (ohm)
@@ -95,6 +100,14 @@ typedef struct {
     float openloop_freq;        // Open-loop frequency [Hz]
     float openloop_accel;       // Open-loop acceleration [Hz/s]
     uint32_t openloop_time_ms;  // Time in current open-loop state [ms]
+
+    // Encoder offset calibration state
+    uint8_t calibration_enabled;    // Flag to enable calibration after index found
+    float calib_sweep_angle;        // Current angle being tested [rad]
+    float calib_best_offset;        // Best offset found so far [rad]
+    float calib_min_iq;             // Minimum |Iq| found during sweep
+    uint32_t calib_step_count;      // Number of sweep steps completed
+    float calib_id_target;          // Id current for calibration
 
 } FOC_Control_t;
 
@@ -149,24 +162,30 @@ void FOC_SetMode(FOC_Mode_t mode);
 FOC_Mode_t FOC_GetMode(void);
 
 /**
- * @brief Start open-loop FOC startup sequence
- * Performs flux alignment, flux ramp, and frequency ramp
- * @param align_time_ms Time for flux alignment (typically 500-1000 ms)
- * @param ramp_time_ms Time for frequency ramp (typically 2000-5000 ms)
- * @param target_freq_hz Target frequency in Hz (typically 5-20 Hz)
- * @param flux_id_a Magnetizing current in Amps (typically 0.3-1.0 A)
+ * @brief Start open-loop FOC startup sequence (DEPRECATED)
+ * 
+ * This function is deprecated. Use FOC_StartCalibration() instead.
+ * Kept for backwards compatibility but does nothing.
  */
 void FOC_StartOpenLoop(uint32_t align_time_ms, uint32_t ramp_time_ms, 
                        float target_freq_hz, float flux_id_a);
 
 /**
- * @brief Stop open-loop FOC
+ * @brief Stop open-loop FOC (DEPRECATED)
+ * 
+ * This function is deprecated. Use FOC_Disable() instead.
  */
 void FOC_StopOpenLoop(void);
 
 /**
  * @brief Update open-loop state machine (call synchronized with ADC/FOC at PWM rate)
  * @param dt_sec Time step in seconds since last call
+ * 
+ * Manages 4 states:
+ * - IDLE: No operation
+ * - WAIT_INDEX: Rotating slowly, searching for encoder index pulse
+ * - CALIBRATE: Standstill, sweeping theta_offset to find d-axis alignment
+ * - COMPLETE: Holds current position, ready for closed-loop transition
  */
 void FOC_UpdateOpenLoop(float dt_sec);
 
@@ -217,5 +236,81 @@ void FOC_SetMotorParams(float Rs, float Rr, float Lm, float Ls, float Lr);
  * @param psi_ref_wb Rotor flux reference in Weber (Wb)
  */
 void FOC_SetRotorFluxReference(float psi_ref_wb);
+
+/**
+ * @brief Synchronize slip angle for smooth open-loop to closed-loop transition
+ * @param theta_rotor Current rotor electrical angle from encoder (rad)
+ * 
+ * Call this before switching to FOC_MODE_CLOSED_LOOP to prevent angle discontinuity.
+ * Sets theta_slip = openloop_angle - theta_rotor so that theta_sync remains continuous.
+ */
+void FOC_SynchronizeSlipAngle(float theta_rotor);
+
+/**
+ * @brief Set encoder offset for d-axis alignment
+ * @param offset_rad Encoder offset in radians
+ * 
+ * Use FOC_CalibrateEncoderOffset() to automatically determine this value,
+ * or set manually if known from motor datasheet or previous calibration.
+ */
+void FOC_SetEncoderOffset(float offset_rad);
+
+/**
+ * @brief Get current encoder offset
+ * @return Encoder offset in radians
+ */
+float FOC_GetEncoderOffset(void);
+
+/**
+ * @brief Start automatic encoder offset calibration sequence
+ * @param flux_id_a Magnetizing current to apply during calibration (typically 0.3-0.5A)
+ * 
+ * This function initiates the automatic calibration sequence:
+ * 1. OPENLOOP_WAIT_INDEX: Rotates motor slowly (2 Hz) until encoder index pulse detected
+ * 2. OPENLOOP_CALIBRATE: Performs automatic sweep to find optimal theta_offset
+ *    - Applies Id magnetizing current with Iq_ref=0
+ *    - Sweeps theta_offset from 0 to 2π in 36 steps (10° increments)
+ *    - Measures |Iq| at each angle after 100ms settling time
+ *    - Finds angle where |Iq| is minimized (d-axis aligned with rotor flux)
+ *    - Saves optimal offset automatically
+ * 3. OPENLOOP_COMPLETE: Calibration done, ready for normal operation
+ * 
+ * Monitor calibration progress with FOC_GetOpenLoopState() and FOC_IsCalibrationComplete()
+ */
+void FOC_StartCalibration(float flux_id_a);
+
+/**
+ * @brief Trigger transition from index search to calibration sweep
+ * 
+ * Call this function when encoder index pulse is detected (encoder->index_found == 1)
+ * Transitions from OPENLOOP_WAIT_INDEX to OPENLOOP_CALIBRATE state
+ */
+void FOC_TriggerCalibration(void);
+
+/**
+ * @brief Check if automatic calibration is complete
+ * @return 1 if calibration finished successfully, 0 if still in progress
+ */
+uint8_t FOC_IsCalibrationComplete(void);
+
+/**
+ * @brief Auto-calibrate encoder offset using d-axis alignment
+ * @param theta_rotor Current rotor electrical angle from encoder (rad)
+ * @param id_target Magnetizing current to apply (typically 0.3-0.5A)
+ * @param duration_ms Duration to hold alignment (typically 1000-2000ms)
+ * @return 1 if calibration successful, 0 if failed
+ * 
+ * NOTE: This is the legacy manual calibration function.
+ * For new designs, use FOC_StartCalibration() for fully automatic calibration.
+ * 
+ * This function performs standstill d-axis alignment:
+ * 1. Applies Id magnetizing current with Iq=0
+ * 2. Sweeps encoder offset to minimize measured Iq
+ * 3. When Iq≈0, d-axis is aligned with rotor flux
+ * 4. Stores the offset for closed-loop operation
+ * 
+ * Motor must be at standstill before calling this.
+ */
+uint8_t FOC_CalibrateEncoderOffset(float theta_rotor, float id_target, uint32_t duration_ms);
 
 #endif /* FOC_CONTROL_H */

@@ -1,9 +1,51 @@
 #include "foc_control.h"
+#include "stm32g4xx_hal.h"
 #include <string.h>
 #include <math.h>
 
 static FOC_Control_t foc_ctrl = {0};
 static const float FOC_TWO_PI = 6.28318530718f;
+static const float FOC_PI = 3.14159265359f;
+static const float CORDIC_Q31_PER_PI = 683565275.5768f;
+static const float CORDIC_Q31_INV = 1.0f / 2147483648.0f;
+
+static inline void CORDIC_SinCos(float angle, float *sin_out, float *cos_out)
+{
+    // Normalize to [-pi, pi] for Q1.31 input range.
+    while (angle >= FOC_TWO_PI) {
+        angle -= FOC_TWO_PI;
+    }
+    while (angle < 0.0f) {
+        angle += FOC_TWO_PI;
+    }
+    if (angle > FOC_PI) {
+        angle -= FOC_TWO_PI;
+    }
+
+    int32_t angle_q31 = (int32_t)(angle * CORDIC_Q31_PER_PI);
+
+    uint32_t csr = CORDIC_FUNCTION_SINE |
+                   CORDIC_PRECISION_6CYCLES |
+                   CORDIC_SCALE_0 |
+                   CORDIC_NBWRITE_1 |
+                   CORDIC_NBREAD_2 |
+                   CORDIC_INSIZE_32BITS |
+                   CORDIC_OUTSIZE_32BITS;
+
+    if (CORDIC->CSR != csr) {
+        CORDIC->CSR = csr;
+    }
+
+    CORDIC->WDATA = (uint32_t)angle_q31;
+    while ((CORDIC->CSR & CORDIC_CSR_RRDY) == 0U) {
+    }
+
+    int32_t sin_q31 = (int32_t)CORDIC->RDATA;
+    int32_t cos_q31 = (int32_t)CORDIC->RDATA;
+
+    *sin_out = (float)sin_q31 * CORDIC_Q31_INV;
+    *cos_out = (float)cos_q31 * CORDIC_Q31_INV;
+}
 
 static float WrapAngle0To2Pi(float angle)
 {
@@ -77,18 +119,18 @@ void FOC_Init(void)
     
     // PID parameters for Id controller (flux control)
     // These values are starting points - tune for your motor
-    foc_ctrl.pid_id.Kp = 2.0f;
-    foc_ctrl.pid_id.Ki = 80.0f;
+    foc_ctrl.pid_id.Kp = 2.0f;   // Increased for faster response
+    foc_ctrl.pid_id.Ki = 20.0f;  // Enable integral for zero steady-state error
     foc_ctrl.pid_id.Kd = 0.0f;
-    foc_ctrl.pid_id.output_min = -1.0f;
-    foc_ctrl.pid_id.output_max = 1.0f;
+    foc_ctrl.pid_id.output_min = -10.0f;  // Increased voltage limits
+    foc_ctrl.pid_id.output_max = 10.0f;
     
     // PID parameters for Iq controller (torque control)
-    foc_ctrl.pid_iq.Kp = 2.0f;
-    foc_ctrl.pid_iq.Ki = 80.0f;
+    foc_ctrl.pid_iq.Kp = 2.0f;   // Increased for faster response
+    foc_ctrl.pid_iq.Ki = 20.0f;  // Enable integral for zero steady-state error
     foc_ctrl.pid_iq.Kd = 0.0f;
-    foc_ctrl.pid_iq.output_min = -1.0f;
-    foc_ctrl.pid_iq.output_max = 1.0f;
+    foc_ctrl.pid_iq.output_min = -10.0f;  // Increased voltage limits
+    foc_ctrl.pid_iq.output_max = 10.0f;
     
     // Maximum output voltage (normalized, typically sqrt(2/3) for SVPWM = 0.8165)
     foc_ctrl.max_voltage = 0.8165f;
@@ -96,9 +138,13 @@ void FOC_Init(void)
     // Induction machine parameters (IRFOC model defaults)
     foc_ctrl.Rs = 0.039f;
     foc_ctrl.Rr = 0.031f;
-    foc_ctrl.Lm = 1.36f;
-    foc_ctrl.Ls = 1.5540f;
-    foc_ctrl.Lr = 1.5540f;
+    // foc_ctrl.Lm = 1.36f;
+    // foc_ctrl.Ls = 1.5540f;
+    // foc_ctrl.Lr = 1.5540f;
+    foc_ctrl.Lm = 0.15f;
+    foc_ctrl.Ls = 0.17f;
+    foc_ctrl.Lr = 0.17f;
+
 
     // IRFOC defaults (encoder-based rotor angle + slip compensation)
     foc_ctrl.slip_comp_enabled = 1U;
@@ -109,6 +155,15 @@ void FOC_Init(void)
     foc_ctrl.omega_slip = 0.0f;
     foc_ctrl.theta_slip = 0.0f;
     foc_ctrl.theta_sync = 0.0f;
+    foc_ctrl.theta_offset = 0.0f;  // Will be calibrated during d-axis alignment
+    
+    // Encoder offset calibration defaults
+    foc_ctrl.calibration_enabled = 0;
+    foc_ctrl.calib_sweep_angle = 0.0f;
+    foc_ctrl.calib_best_offset = 0.0f;
+    foc_ctrl.calib_min_iq = 1000.0f;  // Initialize to large value
+    foc_ctrl.calib_step_count = 0;
+    foc_ctrl.calib_id_target = 0.4f;  // Default calibration current
     
     foc_ctrl.enabled = 0;
 }
@@ -171,12 +226,12 @@ Clarke_Out_t FOC_Update(CurSense_Data_t currents, float theta, float ts)
         // Use imposed angle in open-loop mode
         theta_sync = WrapAngle0To2Pi(foc_ctrl.openloop_angle);
     } else {
-        // Use encoder angle + slip compensation in closed-loop mode
-        theta_sync = WrapAngle0To2Pi(theta + foc_ctrl.theta_slip);
+        // Use encoder angle + offset + slip compensation in closed-loop mode
+        theta_sync = WrapAngle0To2Pi(theta + foc_ctrl.theta_offset + foc_ctrl.theta_slip);
         if (foc_ctrl.slip_comp_enabled == 0U) {
             foc_ctrl.omega_slip = 0.0f;
             foc_ctrl.theta_slip = 0.0f;
-            theta_sync = WrapAngle0To2Pi(theta);
+            theta_sync = WrapAngle0To2Pi(theta + foc_ctrl.theta_offset);
         }
     }
     foc_ctrl.theta_sync = theta_sync;
@@ -186,8 +241,9 @@ Clarke_Out_t FOC_Update(CurSense_Data_t currents, float theta, float ts)
     foc_ctrl.i_clarke = i_alphabeta;  // Store for telemetry
     
     // Step 2: Park Transform (stationary to rotating d-q frame)
-    float sin_theta = sinf(theta_sync);
-    float cos_theta = cosf(theta_sync);
+    float sin_theta = 0.0f;
+    float cos_theta = 1.0f;
+    CORDIC_SinCos(theta_sync, &sin_theta, &cos_theta);
     Park_Out_t i_dq = Park_Transform(i_alphabeta.alpha, i_alphabeta.beta, sin_theta, cos_theta);
     foc_ctrl.i_park = i_dq;  // Store for telemetry
 
@@ -227,8 +283,10 @@ Clarke_Out_t FOC_Update(CurSense_Data_t currents, float theta, float ts)
     float Vq_volts = foc_ctrl.Vq * V_max_available;
     
     // Circular limiting to maintain voltage magnitude within Vbus constraints
-    float V_mag = sqrtf(Vd_volts * Vd_volts + Vq_volts * Vq_volts);
-    if (V_mag > V_max_available) {
+    float V_mag_sq = Vd_volts * Vd_volts + Vq_volts * Vq_volts;
+    float V_max_sq = V_max_available * V_max_available;
+    if (V_mag_sq > V_max_sq) {
+        float V_mag = sqrtf(V_mag_sq);
         float scale = V_max_available / V_mag;
         Vd_volts *= scale;
         Vq_volts *= scale;
@@ -295,48 +353,22 @@ FOC_Mode_t FOC_GetMode(void)
     return foc_ctrl.mode;
 }
 
-// Open-loop startup configuration
-static struct {
-    uint32_t start_time_ms;
-    uint32_t align_duration_ms;
-    uint32_t ramp_duration_ms;
-    float target_freq_hz;
-    float flux_id_a;
-} openloop_config = {0};
-
 void FOC_StartOpenLoop(uint32_t align_time_ms, uint32_t ramp_time_ms, 
                        float target_freq_hz, float flux_id_a)
 {
-    // Store configuration
-    openloop_config.align_duration_ms = align_time_ms;
-    openloop_config.ramp_duration_ms = ramp_time_ms;
-    openloop_config.target_freq_hz = target_freq_hz;
-    openloop_config.flux_id_a = flux_id_a;
+    // Store configuration (for future expansion if needed)
+    (void)align_time_ms;    // Unused
+    (void)ramp_time_ms;     // Unused
+    (void)target_freq_hz;   // Unused
+    (void)flux_id_a;        // Unused
     
-    // Initialize open-loop state
-    foc_ctrl.mode = FOC_MODE_OPEN_LOOP;
-    foc_ctrl.openloop_state = OPENLOOP_FLUX_ALIGN;
-    foc_ctrl.openloop_angle = 0.0f;
-    foc_ctrl.openloop_freq = 0.0f;
-    foc_ctrl.openloop_time_ms = 0;
-    
-    // Set initial current references
-    foc_ctrl.Id_ref = 0.0f;  // Start with low flux
-    foc_ctrl.Iq_ref = 0.0f;  // Zero torque during alignment
-    
-    // Reset rotor flux estimate
-    foc_ctrl.rotor_flux_wb = 0.0f;
-    
-    // Calculate acceleration for frequency ramp
-    if (ramp_time_ms > 0) {
-        foc_ctrl.openloop_accel = (target_freq_hz * 1000.0f) / (float)ramp_time_ms;  // Hz/s
-    } else {
-        foc_ctrl.openloop_accel = 10.0f;  // Default 10 Hz/s
-    }
+    // DEPRECATED: Use FOC_StartCalibration() for calibrated startup instead
+    // This function is kept for compatibility but not actively used
 }
 
 void FOC_StopOpenLoop(void)
 {
+    // DEPRECATED: Not used - call FOC_Disable() instead
     foc_ctrl.openloop_state = OPENLOOP_IDLE;
     foc_ctrl.openloop_angle = 0.0f;
     foc_ctrl.openloop_freq = 0.0f;
@@ -347,6 +379,11 @@ void FOC_StopOpenLoop(void)
 void FOC_UpdateOpenLoop(float dt_sec)
 {
     static float accumulated_time_sec = 0.0f;
+    
+    // Don't run open-loop state machine in closed-loop mode
+    if (foc_ctrl.mode == FOC_MODE_CLOSED_LOOP) {
+        return;
+    }
     
     if (foc_ctrl.openloop_state == OPENLOOP_IDLE) {
         return;
@@ -361,101 +398,76 @@ void FOC_UpdateOpenLoop(float dt_sec)
     }
     
     switch (foc_ctrl.openloop_state) {
-        case OPENLOOP_FLUX_ALIGN:
-            // Phase 1: Flux alignment (stationary rotor)
-            // Gradually ramp up Id to align flux vector
-            {
-                float ramp_fraction = (float)foc_ctrl.openloop_time_ms / (float)openloop_config.align_duration_ms;
-                if (ramp_fraction > 1.0f) ramp_fraction = 1.0f;
-                
-                // Ramp Id from 0 to target flux current
-                foc_ctrl.Id_ref = openloop_config.flux_id_a * ramp_fraction;
-                foc_ctrl.Iq_ref = 0.0f;
-                foc_ctrl.openloop_angle = 0.0f;  // Keep at zero angle
-                foc_ctrl.openloop_freq = 0.0f;
-                
-                // Transition to flux ramp after alignment time
-                if (foc_ctrl.openloop_time_ms >= openloop_config.align_duration_ms) {
-                    foc_ctrl.openloop_state = OPENLOOP_FLUX_RAMP;
-                    foc_ctrl.openloop_time_ms = 0;
-                }
-            }
+        case OPENLOOP_COMPLETE:
+            // Steady state: ready for closed-loop transition
+            // Motor maintains current references set externally (via I/Q commands)
+            // No angle ramping - user controls via UART commands
             break;
             
-        case OPENLOOP_FLUX_RAMP:
-            // Phase 2: Flux ramp (ensure full magnetization)
-            // Keep Id at target, allow flux to build up
+        case OPENLOOP_WAIT_INDEX:
+            // Phase: Slow rotation waiting for encoder index pulse
             {
-                foc_ctrl.Id_ref = openloop_config.flux_id_a;
-                foc_ctrl.Iq_ref = 0.0f;
-                foc_ctrl.openloop_angle = 0.0f;
-                foc_ctrl.openloop_freq = 0.0f;
+                // Maintain flux and torque currents set during FOC_StartCalibration()
+                // foc_ctrl.Id_ref already set to flux_id_a
+                // foc_ctrl.Iq_ref already set to 0.3f for rotation
                 
-                // Wait for flux to stabilize (typically 100-200 ms)
-                uint32_t flux_ramp_time = 200;  // ms
-                if (foc_ctrl.openloop_time_ms >= flux_ramp_time) {
-                    foc_ctrl.openloop_state = OPENLOOP_ACCEL;
-                    foc_ctrl.openloop_time_ms = 0;
-                }
-            }
-            break;
-            
-        case OPENLOOP_ACCEL:
-            // Phase 3: Frequency ramp (accelerate motor)
-            {
-                foc_ctrl.Id_ref = openloop_config.flux_id_a;
-                
-                // Ramp frequency linearly
-                float elapsed_sec = (float)foc_ctrl.openloop_time_ms / 1000.0f;
-                foc_ctrl.openloop_freq = foc_ctrl.openloop_accel * elapsed_sec;
-                
-                if (foc_ctrl.openloop_freq >= openloop_config.target_freq_hz) {
-                    foc_ctrl.openloop_freq = openloop_config.target_freq_hz;
-                    foc_ctrl.openloop_state = OPENLOOP_RUNNING;
-                    foc_ctrl.openloop_time_ms = 0;
-                }
-                
-                // Apply small Iq for startup torque (can be tuned)
-                foc_ctrl.Iq_ref = 0.8f;  // Small torque current
-                
-                // Integrate angle: theta += 2*pi*freq*dt
-                foc_ctrl.openloop_angle += 6.28318530718f * foc_ctrl.openloop_freq * dt_sec;
-                foc_ctrl.openloop_angle = WrapAngle0To2Pi(foc_ctrl.openloop_angle);
-            }
-            break;
-            
-        case OPENLOOP_RUNNING:
-            // Phase 4: Steady state open-loop
-            {
-                foc_ctrl.Id_ref = openloop_config.flux_id_a;
-                foc_ctrl.Iq_ref = 0.8f;  // Maintain torque to avoid stall
-                
-                // Maintain constant frequency
-                foc_ctrl.openloop_freq = openloop_config.target_freq_hz;
+                // Rotate at slow speed (2 Hz) to search for encoder index
+                foc_ctrl.openloop_freq = 2.0f;
                 
                 // Integrate angle
                 foc_ctrl.openloop_angle += 6.28318530718f * foc_ctrl.openloop_freq * dt_sec;
                 foc_ctrl.openloop_angle = WrapAngle0To2Pi(foc_ctrl.openloop_angle);
-                
-                // After running for a while, signal ready for closed-loop
-                if (foc_ctrl.openloop_time_ms >= 2000) {  // 2 seconds in steady state
-                    foc_ctrl.openloop_state = OPENLOOP_COMPLETE;
-                }
             }
             break;
             
-        case OPENLOOP_COMPLETE:
-            // Phase 5: Ready for transition to closed-loop
+        case OPENLOOP_CALIBRATE:
+            // Phase: Automatic encoder offset calibration
+            // Algorithm: Sweep theta_offset from 0 to 2π, find angle where |Iq| is minimum
             {
-                foc_ctrl.Id_ref = openloop_config.flux_id_a;
-                foc_ctrl.Iq_ref = 0.8f;
+                foc_ctrl.Id_ref = foc_ctrl.calib_id_target;  // Magnetizing current
+                foc_ctrl.Iq_ref = 0.0f;  // Zero torque command
                 
-                // Continue running at constant frequency
-                foc_ctrl.openloop_freq = openloop_config.target_freq_hz;
-                foc_ctrl.openloop_angle += 6.28318530718f * foc_ctrl.openloop_freq * dt_sec;
-                foc_ctrl.openloop_angle = WrapAngle0To2Pi(foc_ctrl.openloop_angle);
+                foc_ctrl.openloop_freq = 0.0f;  // Stand still
+                foc_ctrl.openloop_angle = 0.0f;
                 
-                // Ready to switch to FOC_MODE_CLOSED_LOOP
+                // Sweep configuration
+                const uint32_t CALIB_STEPS = 36;  // 10° per step
+                const uint32_t SETTLE_TIME_MS = 100;  // Time to wait at each angle
+                
+                // Wait for current to settle
+                if (foc_ctrl.openloop_time_ms >= SETTLE_TIME_MS) {
+                    // Sample Iq magnitude at this angle
+                    float iq_abs = (foc_ctrl.i_park.q < 0.0f) ? -foc_ctrl.i_park.q : foc_ctrl.i_park.q;
+                    
+                    // Track minimum Iq and corresponding offset
+                    if (iq_abs < foc_ctrl.calib_min_iq) {
+                        foc_ctrl.calib_min_iq = iq_abs;
+                        foc_ctrl.calib_best_offset = foc_ctrl.calib_sweep_angle;
+                    }
+                    
+                    // Move to next angle
+                    foc_ctrl.calib_step_count++;
+                    
+                    if (foc_ctrl.calib_step_count >= CALIB_STEPS) {
+                        // Sweep complete - save best offset
+                        foc_ctrl.theta_offset = foc_ctrl.calib_best_offset;
+                        
+                        // Transition to COMPLETE state
+                        foc_ctrl.openloop_state = OPENLOOP_COMPLETE;
+                        foc_ctrl.calibration_enabled = 0;
+                        foc_ctrl.openloop_time_ms = 0;
+                    } else {
+                        // Increment sweep angle
+                        foc_ctrl.calib_sweep_angle += 6.28318530718f / (float)CALIB_STEPS;
+                        foc_ctrl.calib_sweep_angle = WrapAngle0To2Pi(foc_ctrl.calib_sweep_angle);
+                        
+                        // Update theta_offset to test next angle
+                        foc_ctrl.theta_offset = foc_ctrl.calib_sweep_angle;
+                        
+                        // Reset timer for next settling period
+                        foc_ctrl.openloop_time_ms = 0;
+                    }
+                }
             }
             break;
             
@@ -509,4 +521,111 @@ void FOC_SetRotorFluxReference(float psi_ref_wb)
     if (psi_ref_wb > foc_ctrl.min_flux_wb) {
         foc_ctrl.rotor_flux_wb = psi_ref_wb;
     }
+}
+
+void FOC_SynchronizeSlipAngle(float theta_rotor)
+{
+    // Calculate angle difference to maintain continuity during mode switch
+    // Before: theta_sync = openloop_angle (open-loop mode)
+    // After:  theta_sync = theta_rotor + theta_offset + theta_slip (closed-loop mode)
+    // To keep continuous: theta_slip = openloop_angle - theta_rotor - theta_offset
+    
+    float angle_diff = foc_ctrl.openloop_angle - theta_rotor - foc_ctrl.theta_offset;
+    
+    // Normalize to [0, 2π)
+    foc_ctrl.theta_slip = WrapAngle0To2Pi(angle_diff);
+}
+
+void FOC_SetEncoderOffset(float offset_rad)
+{
+    foc_ctrl.theta_offset = WrapAngle0To2Pi(offset_rad);
+}
+
+float FOC_GetEncoderOffset(void)
+{
+    return foc_ctrl.theta_offset;
+}
+
+void FOC_StartCalibration(float flux_id_a)
+{
+    // Initialize calibration sequence
+    foc_ctrl.calibration_enabled = 1;
+    foc_ctrl.calib_id_target = flux_id_a;
+    foc_ctrl.calib_sweep_angle = 0.0f;
+    foc_ctrl.calib_best_offset = 0.0f;
+    foc_ctrl.calib_min_iq = 1000.0f;  // Reset to large value
+    foc_ctrl.calib_step_count = 0;
+    
+    // Set motor control parameters
+    foc_ctrl.mode = FOC_MODE_OPEN_LOOP;
+    foc_ctrl.openloop_state = OPENLOOP_WAIT_INDEX;
+    foc_ctrl.openloop_time_ms = 0;
+    foc_ctrl.openloop_angle = 0.0f;
+    foc_ctrl.openloop_freq = 2.0f;  // Slow rotation to find index
+    foc_ctrl.Id_ref = flux_id_a;     // Directly set flux current for index search
+    foc_ctrl.Iq_ref = 0.5f;          // Set torque for rotation
+    
+    // Reset PID controllers
+    PID_Reset(&foc_ctrl.pid_id);
+    PID_Reset(&foc_ctrl.pid_iq);
+    
+    // Initialize rotor flux
+    foc_ctrl.rotor_flux_wb = foc_ctrl.Lm * flux_id_a;
+}
+
+void FOC_TriggerCalibration(void)
+{
+    // Transition from WAIT_INDEX to CALIBRATE state
+    // Call this when encoder index is detected
+    if (foc_ctrl.openloop_state == OPENLOOP_WAIT_INDEX && 
+        foc_ctrl.calibration_enabled) {
+        
+        foc_ctrl.openloop_state = OPENLOOP_CALIBRATE;
+        foc_ctrl.openloop_time_ms = 0;
+        foc_ctrl.calib_sweep_angle = 0.0f;
+        foc_ctrl.calib_step_count = 0;
+        foc_ctrl.calib_min_iq = 1000.0f;
+        foc_ctrl.theta_offset = 0.0f;  // Start sweep from zero
+        
+        // Maintain currents for calibration
+        foc_ctrl.Id_ref = foc_ctrl.calib_id_target;  // Flux current
+        foc_ctrl.Iq_ref = 0.0f;  // No torque during calibration
+        foc_ctrl.openloop_freq = 0.0f;  // Stop rotation (standstill)
+    }
+}
+
+uint8_t FOC_IsCalibrationComplete(void)
+{
+    return (foc_ctrl.calibration_enabled == 0 && 
+            foc_ctrl.openloop_state == OPENLOOP_COMPLETE) ? 1U : 0U;
+}
+
+uint8_t FOC_CalibrateEncoderOffset(float theta_rotor, float id_target, uint32_t duration_ms)
+{
+    // This is a simplified version - actual calibration would be iterative
+    // For now, perform basic alignment and let user fine-tune
+    // DEPRECATED: Use FOC_StartCalibration() for automatic calibration
+    
+    (void)theta_rotor;    // Unused in this simplified version
+    (void)duration_ms;    // Unused in this simplified version
+    
+    // Apply Id-only magnetizing current
+    foc_ctrl.Id_ref = id_target;
+    foc_ctrl.Iq_ref = 0.0f;
+    foc_ctrl.enabled = 1;
+    
+    // Initial guess: encoder zero aligns with flux
+    // User should monitor Iq and adjust offset until Iq ≈ 0
+    foc_ctrl.theta_offset = 0.0f;
+    
+    // In a full implementation, this would:
+    // 1. Sweep theta_offset from 0 to 2π
+    // 2. Measure Iq at each angle
+    // 3. Find angle where |Iq| is minimized
+    // 4. That angle is where d-axis aligns with rotor flux
+    
+    // For now, return 1 to indicate initialization complete
+    // User must manually adjust using FOC_SetEncoderOffset()
+    
+    return 1;
 }

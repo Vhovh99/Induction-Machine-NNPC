@@ -22,9 +22,11 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "stm32_hal_legacy.h"
+#include "stm32g4xx.h"
 #include "stm32g4xx_hal.h"
 #include "stm32g4xx_hal_adc_ex.h"
 #include "stm32g4xx_hal_dma.h"
+#include "stm32g4xx_hal_gpio.h"
 #include "stm32g4xx_hal_hrtim.h"
 #include <complex.h>
 #include <stdint.h>
@@ -135,7 +137,6 @@ static uint32_t phase_increment = 0;
 static const uint32_t PWM_PERIOD_CYCLES = 4250;
 static const float PWM_FREQUENCY_HZ = 20000.0f;
 static const float CURRENT_LOOP_TS_SEC = 1.0f / 20000.0f;
-static const float RAD_PER_DEG = 0.01745329252f;
 static const float DEG_PER_RAD = 57.2957795131f;
 // Fixed SVPWM gain: 2/sqrt(3) = 1.1547 in Q15 (37837)
 static const int32_t svpwm_gain_q15 = 37837;
@@ -191,10 +192,8 @@ static uint8_t relay_count = 0;  // Current number of active relays (0-12)
 volatile CurSense_Data_t currents;
 volatile Clarke_Out_t clarke;
 volatile Park_Out_t park;
-volatile float theta = 0.0f; // Rotor angle (electrical)
+volatile float theta_rotor = 0.0f; // Rotor angle
 volatile float theta_mech = 0.0f; // Rotor angle (mechanical)
-volatile uint8_t encoder_index_locked = 0U;
-static float encoder_elec_offset_rad = 0.0f;
 
 /* SVPWM Sampling Variables */
 static SVPWM_Output_t svpwm_output = {0};
@@ -339,18 +338,6 @@ static void FOC_InitCycleCounter(void)
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 }
 
-static float WrapAngle0To2Pi(float angle)
-{
-    const float two_pi = 6.28318530718f;
-    while (angle >= two_pi) {
-        angle -= two_pi;
-    }
-    while (angle < 0.0f) {
-        angle += two_pi;
-    }
-    return angle;
-}
-
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == USART3)
@@ -395,6 +382,7 @@ void Process_Command(uint8_t *cmd_buffer)
     //   Q 1.0   -> Set Iq (torque) reference current (Amperes)
     //   W       -> Query open-loop state, Vbus, frequency, angle, Id, Iq
     //   P       -> Display motor parameters (Rs, Rr, Lm, Ls, Lr)
+    //   D       -> Diagnostics: show currents, transforms, angles, errors
     //   N <0|1> -> Disable/enable slip compensation
     //   G <val> -> Set slip gain
     //
@@ -515,11 +503,26 @@ void Process_Command(uint8_t *cmd_buffer)
             break;
         case 'T': // Transition to Closed-Loop FOC
         case 't':
-            Motor_TransitionToClosedLoop();
-            if (FOC_GetMode() == FOC_MODE_CLOSED_LOOP) {
-                HAL_UART_Transmit(&huart3, (uint8_t*)"FOC Mode: CLOSED-LOOP\r\n", 23, 200);
-            } else {
-                HAL_UART_Transmit(&huart3, (uint8_t*)"Transition failed: check encoder\r\n", 34, 200);
+            {
+                FOC_Control_t *foc_before = FOC_GetState();
+                float angle_before = foc_before->theta_sync;
+                
+                Motor_TransitionToClosedLoop();
+                
+                FOC_Control_t *foc_after = FOC_GetState();
+                float angle_after = foc_after->theta_sync;
+                
+                if (FOC_GetMode() == FOC_MODE_CLOSED_LOOP) {
+                    char msg[150];
+                    snprintf(msg, sizeof(msg), 
+                             "FOC Mode: CLOSED-LOOP\\r\\nAngle sync: %.1f° → %.1f° (Δ=%.1f°)\\r\\n",
+                             angle_before * DEG_PER_RAD,
+                             angle_after * DEG_PER_RAD,
+                             (angle_after - angle_before) * DEG_PER_RAD);
+                    HAL_UART_Transmit(&huart3, (uint8_t*)msg, strlen(msg), 200);
+                } else {
+                    HAL_UART_Transmit(&huart3, (uint8_t*)"Transition failed: motor not in COMPLETE state\\r\\n", 49, 200);
+                }
             }
             break;
         case 'W': // Query open-loop state and Vbus
@@ -528,19 +531,34 @@ void Process_Command(uint8_t *cmd_buffer)
                 OpenLoop_State_t ol_state = FOC_GetOpenLoopState();
                 FOC_Control_t *foc = FOC_GetState();
                 const char* state_names[] = {
-                    "IDLE", "FLUX_ALIGN", "FLUX_RAMP", "ACCEL", "RUNNING", "COMPLETE"
+                    "IDLE",  "WAIT INDEX",
+                    "CALIBRATE", "COMPLETE"
                 };
-            char msg[200];
+            char msg[300];
+            // Calculate slip frequency in Hz for easier interpretation
+            float slip_freq_hz = foc->omega_slip / (2.0f * 3.14159265f);
+            float slip_angle_deg = foc->theta_slip * DEG_PER_RAD;
+            
+            // Safely get state name (bounds check)
+            const char* state_str = "UNKNOWN";
+            if (ol_state < (sizeof(state_names) / sizeof(state_names[0]))) {
+                state_str = state_names[ol_state];
+            }
+            
             snprintf(msg, sizeof(msg),
-                 "Vbus:%.1fV OL:%s Freq:%.1fHz Angle:%.1fdeg Id:%.2fA Iq:%.2fA | Idm:%.2f Iqm:%.2f | ISR:%lu cyc ADC:%u OV:%u SV:%u\r\n",
+                 "Vbus:%.1fV OL:%s Freq:%.1fHz Angle:%.1fdeg Id:%.2fA Iq:%.2fA | Idm:%.2f Iqm:%.2f\\r\\n"
+                 "Slip: %.2fHz (%.1fdeg) Flux:%.3fWb | ISR:%lu ADC:%u OV:%u SV:%u\\r\\n",
                  foc->Vbus,
-                 state_names[ol_state],
+                 state_str,
                  foc->openloop_freq,
                  foc->openloop_angle * DEG_PER_RAD,
                  foc->Id_ref,
                  foc->Iq_ref,
                  foc->i_park.d,
                  foc->i_park.q,
+                 slip_freq_hz,
+                 slip_angle_deg,
+                 foc->rotor_flux_wb,
                  (unsigned long)foc_isr_cycles_last,
                  (unsigned int)foc_fault_adc_sync,
                  (unsigned int)foc_fault_overrun,
@@ -591,6 +609,37 @@ void Process_Command(uint8_t *cmd_buffer)
                 char rmsg[64];
                 snprintf(rmsg, sizeof(rmsg), "Load: %u/12 relays\r\n", relay_count);
                 HAL_UART_Transmit(&huart3, (uint8_t *)rmsg, strlen(rmsg), 200);
+            }
+            break;
+        case 'D': // Diagnostic: Show raw currents, transforms, and angles
+        case 'd':
+            {
+                FOC_Control_t *foc = FOC_GetState();
+                char msg[450];
+                snprintf(msg, sizeof(msg),
+                         "=== FOC DIAGNOSTICS ===\\r\\n"
+                         "Currents (ABC): Ia=%.3f Ib=%.3f Ic=%.3f\\r\\n"
+                         "Clarke (αβ):    α=%.3f  β=%.3f\\r\\n"
+                         "Park (dq):      d=%.3f  q=%.3f\\r\\n"
+                         "References:     Id=%.3f Iq=%.3f\\r\\n"
+                         "Errors:         Ed=%.3f Eq=%.3f\\r\\n"
+                         "Angles: θ_rotor=%.1f° θ_offset=%.1f° θ_slip=%.1f° θ_sync=%.1f°\\r\\n"
+                         "Voltages: Vd=%.3f Vq=%.3f Vbus=%.1fV\\r\\n"
+                         "Flux: %.4fWb (target: %.4fWb)\\r\\n",
+                         currents.Ia, currents.Ib, currents.Ic,
+                         foc->i_clarke.alpha, foc->i_clarke.beta,
+                         foc->i_park.d, foc->i_park.q,
+                         foc->Id_ref, foc->Iq_ref,
+                         foc->Id_ref - foc->i_park.d,
+                         foc->Iq_ref - foc->i_park.q,
+                         theta_rotor * DEG_PER_RAD,
+                         foc->theta_offset * DEG_PER_RAD,
+                         foc->theta_slip * DEG_PER_RAD,
+                         foc->theta_sync * DEG_PER_RAD,
+                         foc->Vd, foc->Vq, foc->Vbus,
+                         foc->rotor_flux_wb,
+                         foc->Lm * foc->Id_ref);
+                HAL_UART_Transmit(&huart3, (uint8_t*)msg, strlen(msg), 200);
             }
             break;
         default:
@@ -727,7 +776,7 @@ int main(void)
   Encoder_Init(&encoder, &htim2, ENCODER_PPR);
   Encoder_Start(&encoder);
   FOC_InitCycleCounter();
-  foc_isr_budget_cycles = (uint32_t)((SystemCoreClock / (uint32_t)PWM_FREQUENCY_HZ) * 0.75f);
+  foc_isr_budget_cycles = (uint32_t)((SystemCoreClock * 0.75f) / (uint32_t)PWM_FREQUENCY_HZ);
   if (foc_isr_budget_cycles == 0U) {
       foc_isr_budget_cycles = 6000U;
   }
@@ -747,7 +796,7 @@ int main(void)
                                          HRTIM_TIMERID_TIMER_D);
   // Initialize FOC control module
   FOC_Init();
-  FOC_SetSlipCompensation(1U, 20.0f, 0.2f);
+  FOC_SetSlipCompensation(1U, 15.0f, 0.2f);
 
   // Initialize V/F control module
   VF_Init(PWM_PERIOD_CYCLES, PWM_FREQUENCY_HZ);
@@ -770,7 +819,7 @@ int main(void)
   // Start DMA-based telemetry transmission
   Telemetry_Start();
   
-  // HAL_TIM_Base_Start_IT(&htim6);
+//   HAL_TIM_Base_Start_IT(&htim6);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -786,7 +835,7 @@ int main(void)
         uart_new_cmd = 0;
     }
 
-    if (ADC_Measure_VTSO() > 100.0f) {
+    if (ADC_Measure_VTSO() > 150.0f) {
         Motor_Stop();
     }
 
@@ -1403,7 +1452,7 @@ static void MX_TIM2_Init(void)
   sEncoderIndexConfig.Polarity = TIM_ENCODERINDEX_POLARITY_NONINVERTED;
   sEncoderIndexConfig.Prescaler = TIM_ENCODERINDEX_PRESCALER_DIV1;
   sEncoderIndexConfig.Filter = 15;
-  sEncoderIndexConfig.FirstIndexEnable = ENABLE;
+  sEncoderIndexConfig.FirstIndexEnable = DISABLE;
   sEncoderIndexConfig.Position = TIM_ENCODERINDEX_POSITION_00;
   sEncoderIndexConfig.Direction = TIM_ENCODERINDEX_DIRECTION_UP_DOWN;
   if (HAL_TIMEx_ConfigEncoderIndex(&htim2, &sEncoderIndexConfig) != HAL_OK)
@@ -1621,72 +1670,85 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+Clarke_Out_t v_alphabeta = {0.0f, 0.0f}; 
 void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
     if (hadc->Instance != ADC1) {
-            return;
+        return;
     }
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
-    uint32_t start_cycles = DWT->CYCCNT;
+    // uint32_t start_cycles = DWT->CYCCNT;
 
     if (__HAL_ADC_GET_FLAG(hadc, ADC_FLAG_JEOS) == RESET) {
-            foc_fault_adc_sync = 1U;
-            if (++foc_invalid_sample_count > 1U) {
-                    FOC_EnterSafeState();
-            }
-            return;
+        foc_fault_adc_sync = 1U;
+        if (++foc_invalid_sample_count > 1U) {
+            FOC_EnterSafeState();
+        }
+        return;
     }
-
+   
     foc_invalid_sample_count = 0U;
     foc_fault_adc_sync = 0U;
 
     // Always measure currents for telemetry/monitoring
     CurSense_Data_t current_sample;
     if (svpwm_enabled && svpwm_output.valid) {
-            current_sample = CurrentSense_ReadWithShuntSelection(svpwm_output.shunt1, svpwm_output.shunt2);
+        current_sample = CurrentSense_ReadWithShuntSelection(svpwm_output.shunt1, svpwm_output.shunt2);
     } else {
-            current_sample = CurrentSense_Read();
+        current_sample = CurrentSense_Read();
     }
     currents = current_sample;
-
+    Encoder_Update(&encoder, CURRENT_LOOP_TS_SEC);
+    theta_mech = Encoder_GetMechanicalAngleRad(&encoder);
+    theta_rotor = Encoder_GetElectricalAngleRad(&encoder, MOTOR_POLE_PAIRS);
+    
+    // Check for encoder index during calibration
+    if (encoder.index_found && FOC_GetOpenLoopState() == OPENLOOP_WAIT_INDEX) {
+        FOC_TriggerCalibration();
+        encoder.index_found = 0;  // Clear flag after processing
+    }
+    
     if (control_mode == CONTROL_FOC) {
-            // 1. Update open-loop FOC state machine
-            FOC_UpdateOpenLoop(CURRENT_LOOP_TS_SEC);
+        // 1. Update open-loop FOC state machine
+        FOC_UpdateOpenLoop(CURRENT_LOOP_TS_SEC);
 
-            // 2. Read encoder position if needed for closed-loop
-            FOC_Mode_t foc_mode = FOC_GetMode();
-            if (foc_mode == FOC_MODE_CLOSED_LOOP) {
-                    if (encoder_index_locked != 0U) {
-                            theta = WrapAngle0To2Pi(Encoder_GetElectricalAngleRad(&encoder, MOTOR_POLE_PAIRS) + encoder_elec_offset_rad);
-                    } else {
-                            theta = 0.0f;
-                    }
-            }
+        // 2. Read encoder position if needed for closed-loop
+        FOC_Mode_t foc_mode = FOC_GetMode();
 
-            // 3. Run FOC control
-            uint8_t can_run_foc = (foc_mode == FOC_MODE_OPEN_LOOP) ||
-                                                        (foc_mode == FOC_MODE_CLOSED_LOOP && encoder_index_locked != 0U);
+        // 3. Run FOC control
+        uint8_t can_run_foc = (foc_mode == FOC_MODE_OPEN_LOOP) ||
+                                                    (foc_mode == FOC_MODE_CLOSED_LOOP);
 
-            if (can_run_foc) {
-                    Clarke_Out_t v_alphabeta = FOC_Update(current_sample, theta, CURRENT_LOOP_TS_SEC);
-                    foc_voltage_alpha = v_alphabeta.alpha;
-                    foc_voltage_beta = v_alphabeta.beta;
-
-                    svpwm_output = SVPWM_Calculate(v_alphabeta.alpha, v_alphabeta.beta);
-
-                    PWM_ApplyFocVoltage(v_alphabeta.alpha, v_alphabeta.beta);
+        if (can_run_foc) {
+            // Select the correct angle feedback
+            float theta_feedback;
+            if (foc_mode == FOC_MODE_OPEN_LOOP) {
+                // Open-loop: use internally imposed angle
+                theta_feedback = FOC_GetState()->openloop_angle;
             } else {
-                    foc_voltage_alpha = 0.0f;
-                    foc_voltage_beta = 0.0f;
-                    PWM_SetNeutralDuty();
+                // Closed-loop: use actual encoder electrical angle
+                theta_feedback = Encoder_GetElectricalAngleRad(&encoder, MOTOR_POLE_PAIRS);
             }
+            
+            v_alphabeta = FOC_Update(current_sample, theta_feedback, CURRENT_LOOP_TS_SEC);
+            foc_voltage_alpha = v_alphabeta.alpha;
+            foc_voltage_beta = v_alphabeta.beta;
+
+            svpwm_output = SVPWM_Calculate(v_alphabeta.alpha, v_alphabeta.beta);
+
+            PWM_ApplyFocVoltage(v_alphabeta.alpha, v_alphabeta.beta);
+        } else {
+            foc_voltage_alpha = 0.0f;
+            foc_voltage_beta = 0.0f;
+            PWM_SetNeutralDuty();
+        }
     }
 
-    foc_isr_cycles_last = DWT->CYCCNT - start_cycles;
-    if (foc_isr_cycles_last > foc_isr_budget_cycles) {
-            foc_fault_overrun = 1U;
-            FOC_EnterSafeState();
-    }
+    // foc_isr_cycles_last = DWT->CYCCNT - start_cycles;
+    // if (foc_isr_cycles_last > foc_isr_budget_cycles) {
+    //     foc_fault_overrun = 1U;
+    //     FOC_EnterSafeState();
+    // }
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
 }
 
@@ -1697,9 +1759,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     
     // 1. Update encoder (velocity/speed calculation at 1kHz is sufficient)
     //    Position reads happen at 20kHz in ADC callback only for closed-loop
-    static const float TIM6_TS_SEC = 0.001f;  // 1kHz = 1ms
+    static const float TIM6_TS_SEC = 1.0f / 2000.0f;  // 20kHz = 50us
     Encoder_Update(&encoder, TIM6_TS_SEC);
-    encoder_index_locked = Encoder_HasIndex(&encoder);
     theta_mech = Encoder_GetMechanicalAngleRad(&encoder);
     
     // 2. Snapshot data from control loop (use values computed by FOC_Update @ 20kHz)
@@ -1754,7 +1815,7 @@ static uint16_t prepare_telemetry_binary(void)
     // Snapshot data safely
     currents_snapshot = currents;
     speed_snapshot = Encoder_GetSpeedRpm(&encoder);
-    theta_snapshot = theta;  // Electrical angle in radians
+    theta_snapshot = theta_rotor; // Electrical angle in radians
     foc_state = FOC_GetState();
     timestamp_ms = HAL_GetTick();
 
@@ -1998,10 +2059,10 @@ void Motor_StartOpenLoopFOC(void)
   // Configure and start open-loop FOC sequence
   // Parameters: align_time_ms, ramp_time_ms, target_freq_hz, flux_id_a
   FOC_StartOpenLoop(
-      500,    // 500 ms flux alignment
+      200,    // 200 ms flux alignment
       6000,   // 6 second frequency ramp
-      5.0f,   // Target 5 Hz (300 RPM for 1 pole pair)
-      0.5f    // 0.5A magnetizing current
+      10.0f,   // Target 10 Hz (300 RPM for 2 pole pair)
+      0.4f    // 0.4A magnetizing current
   );
   
   // Configure FOC operating mode and enable
@@ -2009,7 +2070,7 @@ void Motor_StartOpenLoopFOC(void)
   FOC_Enable();
   
   // Start TIM6 for state machine updates (1 kHz)
-  HAL_TIM_Base_Start_IT(&htim6);
+//   HAL_TIM_Base_Start_IT(&htim6);
 }
 
 /**
@@ -2019,13 +2080,13 @@ void Motor_StartOpenLoopFOC(void)
 void Motor_TransitionToClosedLoop(void)
 {
   if (FOC_GetOpenLoopState() == OPENLOOP_COMPLETE) {
-    // Switch to closed-loop mode (encoder index not required for induction IRFOC)
+    // CRITICAL: Synchronize slip angle before switching modes
+    // This prevents angle discontinuity that would cause motor to stop
+    FOC_SynchronizeSlipAngle(theta_rotor);
+    
+    // Now safe to switch to closed-loop mode (angle is continuous)
     FOC_SetMode(FOC_MODE_CLOSED_LOOP);
-
-    if (encoder_index_locked == 0U) {
-      HAL_UART_Transmit(&huart3, (uint8_t*)"Warning: encoder index not locked\r\n", 38, 200);
-    }
-
+    
     // Optionally stop TIM6 updates (open-loop state machine)
     // HAL_TIM_Base_Stop_IT(&htim6);
   }
