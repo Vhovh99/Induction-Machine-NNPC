@@ -463,6 +463,59 @@ void Process_Command(uint8_t *cmd_buffer)
             Motor_StartOpenLoopFOC();
             HAL_UART_Transmit(&huart3, (uint8_t*)"Open-Loop FOC: STARTED\r\n", 24, 200);
             break;
+        case 'C': // Auto-Calibrate encoder offset (rotate to index, then sweep)
+        case 'c':
+            {
+                if (has_arg != 0U) {
+                    // Optional: specify calibration current (default 0.4A)
+                    float cal_current = val_f;
+                    if (cal_current < 0.1f) cal_current = 0.1f;
+                    if (cal_current > 1.0f) cal_current = 1.0f;
+                    
+                    // Clear any stale encoder index flag for fresh detection
+                    encoder.index_found = 0;
+                    
+                    FOC_Enable();
+                    FOC_StartCalibration(cal_current);
+                    PWM_DisableDmaRequests();
+                    PWM_SetNeutralDuty();
+
+                    // Ensure PWM outputs and counters are running (ADC injected triggers depend on HRTIM)
+                    Motor_Start();
+                    char msg[200];
+                    snprintf(msg, sizeof(msg),
+                             "=== AUTO-CALIBRATION STARTED ===\r\n"
+                             "Phase 1: Searching for encoder index (2 Hz rotation)...\r\n"
+                             "Phase 2: Auto-sweep theta_offset (36 steps @ Id=%.2fA)\r\n"
+                             "Monitor with 'W' command. Wait for COMPLETE.\r\n",
+                             cal_current);
+                    HAL_UART_Transmit(&huart3, (uint8_t*)msg, strlen(msg), 200);
+                } else {
+                    // Status query
+                    FOC_Control_t *foc = FOC_GetState();
+                    OpenLoop_State_t state = FOC_GetOpenLoopState();
+                    const char* state_str = "UNKNOWN";
+                    
+                    if (state == OPENLOOP_WAIT_INDEX) state_str = "WAIT_INDEX";
+                    else if (state == OPENLOOP_CALIBRATE) state_str = "CALIBRATE";
+                    else if (state == OPENLOOP_COMPLETE) state_str = "COMPLETE";
+                    else if (state == OPENLOOP_IDLE) state_str = "IDLE";
+                    
+                    char msg[250];
+                    snprintf(msg, sizeof(msg),
+                             "Calibration Status: %s\r\n"
+                             "Step: %u/36  MinIq: %.3fA  BestOffset: %.1f°\r\n"
+                             "Complete: %s\r\n"
+                             "Usage: C <current> to start (default 0.4A)\r\n",
+                             state_str,
+                             (unsigned int)foc->calib_step_count,
+                             foc->calib_min_iq,
+                             foc->calib_best_offset * DEG_PER_RAD,
+                             (foc->calibration_enabled == 0U && foc->openloop_state == OPENLOOP_COMPLETE) ? "YES" : "NO");
+                    HAL_UART_Transmit(&huart3, (uint8_t*)msg, strlen(msg), 200);
+                }
+            }
+            break;
         case 'N': // Slip compensation enable
         case 'n':
             if (has_arg != 0U) {
@@ -511,7 +564,7 @@ void Process_Command(uint8_t *cmd_buffer)
                 
                 FOC_Control_t *foc_after = FOC_GetState();
                 float angle_after = foc_after->theta_sync;
-                
+                FOC_SetIqReference(0.5f);
                 if (FOC_GetMode() == FOC_MODE_CLOSED_LOOP) {
                     char msg[150];
                     snprintf(msg, sizeof(msg), 
@@ -615,6 +668,13 @@ void Process_Command(uint8_t *cmd_buffer)
         case 'd':
             {
                 FOC_Control_t *foc = FOC_GetState();
+                
+                // Convert angles to degrees and normalize 360° → 0°
+                float theta_rotor_deg = fmodf(theta_rotor * DEG_PER_RAD, 360.0f);
+                float theta_offset_deg = fmodf(foc->theta_offset * DEG_PER_RAD, 360.0f);
+                float theta_slip_deg = fmodf(foc->theta_slip * DEG_PER_RAD, 360.0f);
+                float theta_sync_deg = fmodf(foc->theta_sync * DEG_PER_RAD, 360.0f);
+                
                 char msg[450];
                 snprintf(msg, sizeof(msg),
                          "=== FOC DIAGNOSTICS ===\\r\\n"
@@ -632,10 +692,10 @@ void Process_Command(uint8_t *cmd_buffer)
                          foc->Id_ref, foc->Iq_ref,
                          foc->Id_ref - foc->i_park.d,
                          foc->Iq_ref - foc->i_park.q,
-                         theta_rotor * DEG_PER_RAD,
-                         foc->theta_offset * DEG_PER_RAD,
-                         foc->theta_slip * DEG_PER_RAD,
-                         foc->theta_sync * DEG_PER_RAD,
+                         theta_rotor_deg,
+                         theta_offset_deg,
+                         theta_slip_deg,
+                         theta_sync_deg,
                          foc->Vd, foc->Vq, foc->Vbus,
                          foc->rotor_flux_wb,
                          foc->Lm * foc->Id_ref);
@@ -1709,8 +1769,11 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
     }
     
     if (control_mode == CONTROL_FOC) {
+        // Cache encoder angle to avoid redundant reads (~5μs saved)
+        float encoder_angle = theta_rotor;  // Reuse already-read encoder angle
+        
         // 1. Update open-loop FOC state machine
-        FOC_UpdateOpenLoop(CURRENT_LOOP_TS_SEC);
+        FOC_UpdateOpenLoop(CURRENT_LOOP_TS_SEC, encoder_angle);
 
         // 2. Read encoder position if needed for closed-loop
         FOC_Mode_t foc_mode = FOC_GetMode();
@@ -1727,7 +1790,7 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
                 theta_feedback = FOC_GetState()->openloop_angle;
             } else {
                 // Closed-loop: use actual encoder electrical angle
-                theta_feedback = Encoder_GetElectricalAngleRad(&encoder, MOTOR_POLE_PAIRS);
+                theta_feedback = encoder_angle;
             }
             
             v_alphabeta = FOC_Update(current_sample, theta_feedback, CURRENT_LOOP_TS_SEC);
@@ -2082,7 +2145,7 @@ void Motor_TransitionToClosedLoop(void)
   if (FOC_GetOpenLoopState() == OPENLOOP_COMPLETE) {
     // CRITICAL: Synchronize slip angle before switching modes
     // This prevents angle discontinuity that would cause motor to stop
-    FOC_SynchronizeSlipAngle(theta_rotor);
+    FOC_SynchronizeSlipAngle(Encoder_GetElectricalAngleRad(&encoder, MOTOR_POLE_PAIRS));
     
     // Now safe to switch to closed-loop mode (angle is continuous)
     FOC_SetMode(FOC_MODE_CLOSED_LOOP);

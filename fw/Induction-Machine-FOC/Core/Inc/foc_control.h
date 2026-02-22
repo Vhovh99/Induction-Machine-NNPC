@@ -105,6 +105,7 @@ typedef struct {
     uint8_t calibration_enabled;    // Flag to enable calibration after index found
     float calib_sweep_angle;        // Current angle being tested [rad]
     float calib_best_offset;        // Best offset found so far [rad]
+    float calib_best_encoder;       // Encoder reading at best alignment [rad]
     float calib_min_iq;             // Minimum |Iq| found during sweep
     uint32_t calib_step_count;      // Number of sweep steps completed
     float calib_id_target;          // Id current for calibration
@@ -187,7 +188,7 @@ void FOC_StopOpenLoop(void);
  * - CALIBRATE: Standstill, sweeping theta_offset to find d-axis alignment
  * - COMPLETE: Holds current position, ready for closed-loop transition
  */
-void FOC_UpdateOpenLoop(float dt_sec);
+void FOC_UpdateOpenLoop(float dt_sec, float theta_encoder);
 
 /**
  * @brief Get open-loop state

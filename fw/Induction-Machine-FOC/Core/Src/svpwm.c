@@ -57,8 +57,10 @@ SVPWM_Output_t SVPWM_Calculate(float v_alpha, float v_beta)
     SVPWM_Output_t output = {0};
     
     // Limit magnitude to max modulation index
-    float mag = sqrtf(v_alpha * v_alpha + v_beta * v_beta);
-    if (mag > config.max_modulation_index) {
+    float mag_sq = v_alpha * v_alpha + v_beta * v_beta;
+    float max_mag_sq = config.max_modulation_index * config.max_modulation_index;
+    if (mag_sq > max_mag_sq) {
+        float mag = sqrtf(mag_sq);
         float scale = config.max_modulation_index / mag;
         v_alpha *= scale;
         v_beta *= scale;

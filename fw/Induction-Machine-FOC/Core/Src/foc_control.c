@@ -118,18 +118,19 @@ void FOC_Init(void)
     foc_ctrl.openloop_accel = 5.0f;  // 5 Hz/s default
     
     // PID parameters for Id controller (flux control)
-    // These values are starting points - tune for your motor
-    foc_ctrl.pid_id.Kp = 2.0f;   // Increased for faster response
-    foc_ctrl.pid_id.Ki = 20.0f;  // Enable integral for zero steady-state error
+    // Conservative tuning to avoid oscillations with 40μs ISR time
+    foc_ctrl.pid_id.Kp = 0.3f;   // Slightly increased (was 0.2)
+    foc_ctrl.pid_id.Ki = 3.0f;   // Reduced from 5.0 to avoid overshoot
     foc_ctrl.pid_id.Kd = 0.0f;
-    foc_ctrl.pid_id.output_min = -10.0f;  // Increased voltage limits
+    foc_ctrl.pid_id.output_min = -10.0f;
     foc_ctrl.pid_id.output_max = 10.0f;
     
     // PID parameters for Iq controller (torque control)
-    foc_ctrl.pid_iq.Kp = 2.0f;   // Increased for faster response
-    foc_ctrl.pid_iq.Ki = 20.0f;  // Enable integral for zero steady-state error
+    // Conservative tuning to avoid oscillations with 40μs ISR time
+    foc_ctrl.pid_iq.Kp = 0.3f;   // Slightly increased (was 0.2)
+    foc_ctrl.pid_iq.Ki = 3.0f;   // Reduced from 5.0 to avoid overshoot
     foc_ctrl.pid_iq.Kd = 0.0f;
-    foc_ctrl.pid_iq.output_min = -10.0f;  // Increased voltage limits
+    foc_ctrl.pid_iq.output_min = -10.0f;
     foc_ctrl.pid_iq.output_max = 10.0f;
     
     // Maximum output voltage (normalized, typically sqrt(2/3) for SVPWM = 0.8165)
@@ -147,8 +148,8 @@ void FOC_Init(void)
 
 
     // IRFOC defaults (encoder-based rotor angle + slip compensation)
-    foc_ctrl.slip_comp_enabled = 1U;
-    foc_ctrl.slip_gain = 1.0f;
+    foc_ctrl.slip_comp_enabled = 1U;  // Enable slip compensation (essential for IRFOC)
+    foc_ctrl.slip_gain = 0.3f;  // Reduced from 0.5 - smaller motor needs less slip boost
     foc_ctrl.min_id_for_slip = 0.2f;
     foc_ctrl.min_flux_wb = foc_ctrl.Lm * foc_ctrl.min_id_for_slip;
     foc_ctrl.rotor_flux_wb = foc_ctrl.Lm * foc_ctrl.Id_ref;
@@ -161,6 +162,7 @@ void FOC_Init(void)
     foc_ctrl.calibration_enabled = 0;
     foc_ctrl.calib_sweep_angle = 0.0f;
     foc_ctrl.calib_best_offset = 0.0f;
+    foc_ctrl.calib_best_encoder = 0.0f;
     foc_ctrl.calib_min_iq = 1000.0f;  // Initialize to large value
     foc_ctrl.calib_step_count = 0;
     foc_ctrl.calib_id_target = 0.4f;  // Default calibration current
@@ -222,16 +224,24 @@ Clarke_Out_t FOC_Update(CurSense_Data_t currents, float theta, float ts)
     
     // Select angle based on mode
     float theta_sync;
+    float theta_park;  // Angle for Park transform (d-q measurement frame)
+    
     if (foc_ctrl.mode == FOC_MODE_OPEN_LOOP) {
         // Use imposed angle in open-loop mode
         theta_sync = WrapAngle0To2Pi(foc_ctrl.openloop_angle);
+        theta_park = theta_sync;  // Same angle for both transforms in open-loop
     } else {
-        // Use encoder angle + offset + slip compensation in closed-loop mode
-        theta_sync = WrapAngle0To2Pi(theta + foc_ctrl.theta_offset + foc_ctrl.theta_slip);
+        // IRFOC: Park uses rotor flux angle, Inverse Park uses synchronous angle
+        // theta_park aligns d-axis with rotor flux (for current measurement)
+        theta_park = WrapAngle0To2Pi(theta + foc_ctrl.theta_offset);
+        
+        // theta_sync is stator field angle (rotor flux + slip)
+        theta_sync = WrapAngle0To2Pi(theta_park + foc_ctrl.theta_slip);
+        
         if (foc_ctrl.slip_comp_enabled == 0U) {
             foc_ctrl.omega_slip = 0.0f;
             foc_ctrl.theta_slip = 0.0f;
-            theta_sync = WrapAngle0To2Pi(theta + foc_ctrl.theta_offset);
+            theta_sync = theta_park;  // No slip - synchronous = rotor flux angle
         }
     }
     foc_ctrl.theta_sync = theta_sync;
@@ -241,10 +251,11 @@ Clarke_Out_t FOC_Update(CurSense_Data_t currents, float theta, float ts)
     foc_ctrl.i_clarke = i_alphabeta;  // Store for telemetry
     
     // Step 2: Park Transform (stationary to rotating d-q frame)
-    float sin_theta = 0.0f;
-    float cos_theta = 1.0f;
-    CORDIC_SinCos(theta_sync, &sin_theta, &cos_theta);
-    Park_Out_t i_dq = Park_Transform(i_alphabeta.alpha, i_alphabeta.beta, sin_theta, cos_theta);
+    // Use theta_park (rotor flux angle) for current measurement
+    float sin_theta_park = 0.0f;
+    float cos_theta_park = 1.0f;
+    CORDIC_SinCos(theta_park, &sin_theta_park, &cos_theta_park);
+    Park_Out_t i_dq = Park_Transform(i_alphabeta.alpha, i_alphabeta.beta, sin_theta_park, cos_theta_park);
     foc_ctrl.i_park = i_dq;  // Store for telemetry
 
     // IRFOC rotor flux model and slip speed update (current model)
@@ -264,7 +275,6 @@ Clarke_Out_t FOC_Update(CurSense_Data_t currents, float theta, float ts)
         foc_ctrl.omega_slip = foc_ctrl.slip_gain * (foc_ctrl.Lm / psi_r) * rr_over_lr * i_dq.q;
         foc_ctrl.theta_slip = WrapAngle0To2Pi(foc_ctrl.theta_slip + foc_ctrl.omega_slip * ts);
     }
-    
     // Step 3: Current control - PI/PID loops in rotating frame
     float error_id = foc_ctrl.Id_ref - i_dq.d;
     float error_iq = foc_ctrl.Iq_ref - i_dq.q;
@@ -295,10 +305,15 @@ Clarke_Out_t FOC_Update(CurSense_Data_t currents, float theta, float ts)
     }
     
     // Step 5: Inverse Park Transform (d-q to stationary alpha-beta)
+    // Use theta_sync (rotor flux + slip) for voltage generation
+    float sin_theta_sync = 0.0f;
+    float cos_theta_sync = 1.0f;
+    CORDIC_SinCos(theta_sync, &sin_theta_sync, &cos_theta_sync);
+    
     // Normalize back to -1.0 to +1.0 range for PWM
     float Vd_norm = Vd_volts / V_max_available;
     float Vq_norm = Vq_volts / V_max_available;
-    voltage_ref = Inv_Park_Transform(Vd_norm, Vq_norm, sin_theta, cos_theta);
+    voltage_ref = Inv_Park_Transform(Vd_norm, Vq_norm, sin_theta_sync, cos_theta_sync);
 
     return voltage_ref;
 }
@@ -376,7 +391,7 @@ void FOC_StopOpenLoop(void)
     foc_ctrl.Iq_ref = 0.0f;
 }
 
-void FOC_UpdateOpenLoop(float dt_sec)
+void FOC_UpdateOpenLoop(float dt_sec, float theta_encoder)
 {
     static float accumulated_time_sec = 0.0f;
     
@@ -422,13 +437,12 @@ void FOC_UpdateOpenLoop(float dt_sec)
             
         case OPENLOOP_CALIBRATE:
             // Phase: Automatic encoder offset calibration
-            // Algorithm: Sweep theta_offset from 0 to 2π, find angle where |Iq| is minimum
+            // Algorithm: Sweep openloop_angle from 0 to 2π, find angle where |Iq| is minimum
             {
                 foc_ctrl.Id_ref = foc_ctrl.calib_id_target;  // Magnetizing current
                 foc_ctrl.Iq_ref = 0.0f;  // Zero torque command
                 
-                foc_ctrl.openloop_freq = 0.0f;  // Stand still
-                foc_ctrl.openloop_angle = 0.0f;
+                foc_ctrl.openloop_freq = 0.0f;  // Stand still (don't auto-increment)
                 
                 // Sweep configuration
                 const uint32_t CALIB_STEPS = 36;  // 10° per step
@@ -439,30 +453,36 @@ void FOC_UpdateOpenLoop(float dt_sec)
                     // Sample Iq magnitude at this angle
                     float iq_abs = (foc_ctrl.i_park.q < 0.0f) ? -foc_ctrl.i_park.q : foc_ctrl.i_park.q;
                     
-                    // Track minimum Iq and corresponding offset
+                    // Track minimum Iq and corresponding offset + encoder reading
                     if (iq_abs < foc_ctrl.calib_min_iq) {
                         foc_ctrl.calib_min_iq = iq_abs;
+                        // Save both the voltage angle and the encoder reading at best alignment
                         foc_ctrl.calib_best_offset = foc_ctrl.calib_sweep_angle;
+                        foc_ctrl.calib_best_encoder = theta_encoder;
                     }
                     
                     // Move to next angle
                     foc_ctrl.calib_step_count++;
                     
                     if (foc_ctrl.calib_step_count >= CALIB_STEPS) {
-                        // Sweep complete - save best offset
-                        foc_ctrl.theta_offset = foc_ctrl.calib_best_offset;
+                        // Sweep complete - compute offset with inverted sign
+                        // theta_offset = encoder_at_best - voltage_angle_best (INVERTED)
+                        // In closed-loop: theta_sync = encoder + offset
+                        // foc_ctrl.theta_offset = foc_ctrl.calib_best_encoder - foc_ctrl.calib_best_offset;
+                        foc_ctrl.theta_offset = foc_ctrl.calib_best_offset - foc_ctrl.calib_best_encoder;  // Invert sign for correct alignment
+                        foc_ctrl.openloop_angle = 0.0f;  // Set motor reference to 0 (neutral position)
                         
                         // Transition to COMPLETE state
                         foc_ctrl.openloop_state = OPENLOOP_COMPLETE;
                         foc_ctrl.calibration_enabled = 0;
                         foc_ctrl.openloop_time_ms = 0;
                     } else {
-                        // Increment sweep angle
+                        // Increment sweep angle (this is what varies during measurement)
                         foc_ctrl.calib_sweep_angle += 6.28318530718f / (float)CALIB_STEPS;
                         foc_ctrl.calib_sweep_angle = WrapAngle0To2Pi(foc_ctrl.calib_sweep_angle);
                         
-                        // Update theta_offset to test next angle
-                        foc_ctrl.theta_offset = foc_ctrl.calib_sweep_angle;
+                        // Apply this angle as the motor reference for sensing
+                        foc_ctrl.openloop_angle = foc_ctrl.calib_sweep_angle;
                         
                         // Reset timer for next settling period
                         foc_ctrl.openloop_time_ms = 0;
@@ -553,6 +573,7 @@ void FOC_StartCalibration(float flux_id_a)
     foc_ctrl.calib_id_target = flux_id_a;
     foc_ctrl.calib_sweep_angle = 0.0f;
     foc_ctrl.calib_best_offset = 0.0f;
+    foc_ctrl.calib_best_encoder = 0.0f;
     foc_ctrl.calib_min_iq = 1000.0f;  // Reset to large value
     foc_ctrl.calib_step_count = 0;
     

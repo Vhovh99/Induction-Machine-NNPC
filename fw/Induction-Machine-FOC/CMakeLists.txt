@@ -95,3 +95,7 @@ add_custom_command(
     COMMAND ${CMAKE_OBJCOPY} -O binary ${TARGET_ELF} ${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}.bin
     COMMENT "Generating .bin file"
 )
+
+
+target_compile_options(${PROJECT_NAME} PUBLIC -mfloat-abi=hard -mfpu=fpv4-sp-d16 -mthumb -mcpu=cortex-m4)
+

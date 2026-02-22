@@ -17,27 +17,47 @@ static int16_t sine_lut_q15[LUT_SIZE];
  * @brief Fast sine calculation using CORDIC hardware accelerator
  * @param angle: Angle in radians
  * @retval Sine value (-1.0 to 1.0)
- * @note CORDIC must be pre-configured in MX_CORDIC_Init() for sine calculation
  */
 static inline float cordic_sin(float angle)
 {
-  const float TWO_PI = 6.28318530717958647692f;
-  const float PI = 3.14159265358979323846f;
-  
-  // Normalize angle to [0, 2*PI]
-  while (angle > TWO_PI) angle -= TWO_PI;
-  while (angle < 0.0f) angle += TWO_PI;
-  
-  // Convert to [-PI, PI] range for CORDIC
-  if (angle > PI) angle -= TWO_PI;
-  
-  // Convert radians to Q1.31: q31_value = angle * (2^31 / PI)
-  int32_t angle_q31 = (int32_t)(angle * 683565275.5768f);
-  
-  int32_t sine_q31;
-  HAL_CORDIC_CalculateZO(&hcordic, &angle_q31, &sine_q31, 1, HAL_MAX_DELAY);
-  
-  return (float)sine_q31 / 2147483648.0f;
+    const float TWO_PI = 6.28318530718f;
+    const float PI = 3.14159265359f;
+    const float Q31_PER_PI = 683565275.5768f;
+    const float Q31_INV = 1.0f / 2147483648.0f;
+
+    // Normalize angle to [-PI, PI] for CORDIC input.
+    while (angle >= TWO_PI) {
+        angle -= TWO_PI;
+    }
+    while (angle < 0.0f) {
+        angle += TWO_PI;
+    }
+    if (angle > PI) {
+        angle -= TWO_PI;
+    }
+
+    int32_t angle_q31 = (int32_t)(angle * Q31_PER_PI);
+
+    uint32_t csr = CORDIC_FUNCTION_SINE |
+                                 CORDIC_PRECISION_6CYCLES |
+                                 CORDIC_SCALE_0 |
+                                 CORDIC_NBWRITE_1 |
+                                 CORDIC_NBREAD_2 |
+                                 CORDIC_INSIZE_32BITS |
+                                 CORDIC_OUTSIZE_32BITS;
+
+    if (CORDIC->CSR != csr) {
+        CORDIC->CSR = csr;
+    }
+
+    CORDIC->WDATA = (uint32_t)angle_q31;
+    while ((CORDIC->CSR & CORDIC_CSR_RRDY) == 0U) {
+    }
+
+    int32_t sine_q31 = (int32_t)CORDIC->RDATA;
+    (void)CORDIC->RDATA; // Discard cosine result.
+
+    return (float)sine_q31 * Q31_INV;
 }
 
 /**
@@ -112,16 +132,6 @@ uint32_t sine_to_cmp(int16_t s_q15, uint32_t period_cycles, int32_t modulation_q
     //    Shift back from Q15 to integer domain
     compare_val >>= 15;
     
-    // Limit max compare value to ensure Low Side pulse is longer than deadtime
-    // HRTIM Deadtime is configured to 200 ticks. We preserve 250 ticks to ensure partial switching.
-    // This prevents the Low Side from disappearing completely ("0 state") due to deadtime insertion.
-    // const uint32_t MIN_OFF_TIME = 250;
-    // if (period_cycles > MIN_OFF_TIME) {
-    //     if (compare_val > (period_cycles - MIN_OFF_TIME)) {
-    //         compare_val = period_cycles - MIN_OFF_TIME;
-    //     }
-    // }
-
     return (uint32_t)compare_val;
 }
 
