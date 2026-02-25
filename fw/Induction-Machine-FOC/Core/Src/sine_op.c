@@ -6,11 +6,6 @@
 
 extern CORDIC_HandleTypeDef hcordic;
 
-/**
- * LUT (Look-Up Table) storage for Sine values in Q15 format.
- * Size is determined by LUT_SIZE in header.
- */
-static int16_t sine_lut_q15[LUT_SIZE];
 
 
 /**
@@ -60,44 +55,18 @@ static inline float cordic_sin(float angle)
     return (float)sine_q31 * Q31_INV;
 }
 
-/**
- * @brief Build sine lookup table using standard math library
- *        Generates one full cycle of sine wave scaled to Q15 format.
- */
-void build_sine_lut(void)
+static inline float cordic_cos(float angle)
 {
-    const float PI = 3.14159265358979323846f;
-    const float TWO_PI = 2.0f * PI;
-
-    for (uint32_t i = 0; i < LUT_SIZE; i++) {
-        // Calculate angle for this index (0 to 2*PI)
-        float angle_rad = (TWO_PI * (float)i) / (float)LUT_SIZE;
-        
-        // Calculate sine value (-1.0 to 1.0)
-        float sine_val = cordic_sin(angle_rad);
-        
-        // Convert to Q15 fixed-point (-32767 to 32767)
-        int32_t v = (int32_t)lrintf(sine_val * (float)Q15_MAX);
-        
-        // Clamp values to valid Q15 range
-        if (v >  Q15_MAX) v =  Q15_MAX;
-        if (v < -Q15_MAX) v = -Q15_MAX;
-        
-        sine_lut_q15[i] = (int16_t)v;
-    }
+    const float PI_2 = 1.57079632679f; // PI/2
+    return cordic_sin(angle + PI_2);
 }
 
-/** 
- * @brief Get sine value from lookup table
- * @param phase: Phase angle in Q32 format (0 to 2^32-1 representing 0 to 2*PI)
- * @retval Sine value in Q15 format (-32767 to 32767)
- */
-int16_t get_sine_q15(uint32_t phase)
+void pre_calc_sin_cos(float theta, float *sin_theta, float *cos_theta) 
 {
-    // Use the top LUT_BITS of the 32-bit phase accumulator to select LUT index
-    uint16_t index = (uint16_t)(phase >> (32 - LUT_BITS)); 
-    return sine_lut_q15[index];
+    *sin_theta = cordic_sin(theta);
+    *cos_theta = cordic_cos(theta);
 }
+
 
 /**
  * @brief Convert sine value to PWM compare register value

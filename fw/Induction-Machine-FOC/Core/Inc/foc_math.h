@@ -3,6 +3,9 @@
 
 #include <math.h>
 
+#define RAD_TO_DEG(rad) ((rad) * 57.29577951308232f)  // 180/π
+#define DEG_TO_RAD(deg) ((deg) * 0.017453292519943f)  // π/180
+
 typedef struct {
     float alpha;
     float beta;

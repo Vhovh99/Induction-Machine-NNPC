@@ -55,6 +55,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/relay_control.c
     Core/Src/encoder.c
     Core/Src/svpwm.c
+    Core/Src/foc_control.c
 )
 
 set(CMAKE_C_LINK_FLAGS "${CMAKE_C_LINK_FLAGS} -u _printf_float")

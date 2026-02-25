@@ -21,27 +21,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "stm32_hal_legacy.h"
-#include "stm32g4xx.h"
-#include "stm32g4xx_hal.h"
-#include "stm32g4xx_hal_adc_ex.h"
-#include "stm32g4xx_hal_dma.h"
-#include "stm32g4xx_hal_gpio.h"
-#include <complex.h>
-#include <stdint.h>
-#include "sine_op.h"
-#include "foc_math.h"
 #include "foc_control.h"
-#include "vf_control.h"
-#include "current_sense.h"
-#include "encoder.h"
 #include "stm32g4xx_hal_tim.h"
-#include "relay_control.h"
-#include "svpwm.h"
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
-#include <math.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -110,15 +91,6 @@ typedef struct {
 #define TELEMETRY_BUFFER_SIZE 128
 static uint8_t telemetry_buffer[TELEMETRY_BUFFER_SIZE];
 
-/* FOC Variables */
-volatile CurSense_Data_t currents;
-volatile Clarke_Out_t clarke;
-volatile Park_Out_t park;
-volatile float theta_rotor = 0.0f; // Rotor angle
-volatile float theta_mech = 0.0f; // Rotor angle (mechanical)
-
-/* SVPWM Sampling Variables */
-static SVPWM_Output_t svpwm_output = {0};
 
 /* USER CODE END PV */
 
@@ -148,14 +120,6 @@ static inline int32_t ClampQ15(int32_t value)
     }
     return value;
 }
-
-static void PWM_WriteCompareShadow(uint32_t cmp_a, uint32_t cmp_b, uint32_t cmp_c)
-{
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, cmp_a);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, cmp_b);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, cmp_c);
-}
-
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
@@ -248,6 +212,8 @@ int main(void)
     if (ADC_Measure_VTSO() > 150.0f) {
         HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_ALL);
     }
+
+    svpwm_test();
 
   }
   /* USER CODE END 3 */
@@ -510,6 +476,7 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 0 */
 
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
   TIMEx_BreakInputConfigTypeDef sBreakInputConfig = {0};
   TIM_OC_InitTypeDef sConfigOC = {0};
@@ -525,6 +492,15 @@ static void MX_TIM1_Init(void)
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
   if (HAL_TIM_PWM_Init(&htim1) != HAL_OK)
   {
     Error_Handler();
@@ -539,10 +515,10 @@ static void MX_TIM1_Init(void)
   sBreakInputConfig.Source = TIM_BREAKINPUTSOURCE_BKIN;
   sBreakInputConfig.Enable = TIM_BREAKINPUTSOURCE_ENABLE;
   sBreakInputConfig.Polarity = TIM_BREAKINPUTSOURCE_POLARITY_LOW;
-  if (HAL_TIMEx_ConfigBreakInput(&htim1, TIM_BREAKINPUT_BRK, &sBreakInputConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
+  // if (HAL_TIMEx_ConfigBreakInput(&htim1, TIM_BREAKINPUT_BRK, &sBreakInputConfig) != HAL_OK)
+  // {
+  //   Error_Handler();
+  // }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
   sConfigOC.Pulse = 0;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
@@ -785,7 +761,7 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-Clarke_Out_t v_alphabeta = {0.0f, 0.0f}; 
+
 void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
     if (hadc->Instance != ADC1) {

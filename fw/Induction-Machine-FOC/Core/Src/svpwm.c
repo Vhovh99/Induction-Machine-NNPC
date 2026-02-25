@@ -89,7 +89,7 @@ SVPWM_Output_t SVPWM_Calculate(float v_alpha, float v_beta, float v_bus)
 
     // 3. Calculate active vector times (normalized period = 1.0)
     float t1, t2;
-    float pwm_period = 1.0f;
+    float pwm_period = 4249;
 
     switch(sector) {
         case 1:
@@ -146,15 +146,7 @@ SVPWM_Output_t SVPWM_Calculate(float v_alpha, float v_beta, float v_bus)
             output.duty_c = 0.5f;
             break;
     }
-    
-    // Clamp duty cycles
-    if (output.duty_a < 0.0f) output.duty_a = 0.0f;
-    if (output.duty_a > 1.0f) output.duty_a = 1.0f;
-    if (output.duty_b < 0.0f) output.duty_b = 0.0f;
-    if (output.duty_b > 1.0f) output.duty_b = 1.0f;
-    if (output.duty_c < 0.0f) output.duty_c = 0.0f;
-    if (output.duty_c > 1.0f) output.duty_c = 1.0f;
-    
+       
     // Select valid shunts
     output.valid = SVPWM_SelectShunts(output.sector, output.duty_a, output.duty_b, output.duty_c,
                                       &output.shunt1, &output.shunt2);
