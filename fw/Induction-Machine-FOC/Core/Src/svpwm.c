@@ -2,6 +2,11 @@
 #include <math.h>
 #include <string.h>
 
+// Constants for SVPWM calculation
+#define ONE_BY_SQRT3 0.577350269f
+#define TWO_BY_SQRT3 1.154700538f
+
+
 static SVPWM_Config_t config = {0};
 
 void SVPWM_Init(SVPWM_Config_t *cfg)
@@ -14,9 +19,6 @@ void SVPWM_Init(SVPWM_Config_t *cfg)
     }
     if (config.trigger_offset < 0.01f) {
         config.trigger_offset = 0.05f;   // 5% offset from duty edge
-    }
-    if (config.max_modulation_index < 0.1f) {
-        config.max_modulation_index = 0.8165f;  // Standard SVPWM
     }
 }
 
@@ -52,51 +54,98 @@ SVPWM_Sector_t SVPWM_GetSector(float v_alpha, float v_beta)
     return sector_map[N];
 }
 
-SVPWM_Output_t SVPWM_Calculate(float v_alpha, float v_beta)
+
+
+SVPWM_Output_t SVPWM_Calculate(float v_alpha, float v_beta, float v_bus)
 {
     SVPWM_Output_t output = {0};
-    
-    // Limit magnitude to max modulation index
-    float mag_sq = v_alpha * v_alpha + v_beta * v_beta;
-    float max_mag_sq = config.max_modulation_index * config.max_modulation_index;
-    if (mag_sq > max_mag_sq) {
-        float mag = sqrtf(mag_sq);
-        float scale = config.max_modulation_index / mag;
-        v_alpha *= scale;
-        v_beta *= scale;
+
+    // 1. Normalize voltages by vbus
+    float alpha_norm, beta_norm;
+    if (v_bus > 0.1f) {
+        alpha_norm = v_alpha / v_bus;
+        beta_norm = v_beta / v_bus;
+    } else {
+        alpha_norm = 0.0f;
+        beta_norm = 0.0f;
     }
-    
-    // Get sector
-    output.sector = SVPWM_GetSector(v_alpha, v_beta);
-    
-    // Calculate phase voltages using inverse Clarke transform
-    // Va = v_alpha
-    // Vb = -0.5 * v_alpha + sqrt(3)/2 * v_beta
-    // Vc = -0.5 * v_alpha - sqrt(3)/2 * v_beta
-    float va = v_alpha;
-    float vb = -0.5f * v_alpha + 0.866025404f * v_beta;
-    float vc = -0.5f * v_alpha - 0.866025404f * v_beta;
-    
-    // Find min and max for SVPWM offset (min-max injection)
-    float v_min = va;
-    if (vb < v_min) v_min = vb;
-    if (vc < v_min) v_min = vc;
-    
-    float v_max = va;
-    if (vb > v_max) v_max = vb;
-    if (vc > v_max) v_max = vc;
-    
-    // Apply SVPWM offset
-    float v_offset = -0.5f * (v_max + v_min);
-    va += v_offset;
-    vb += v_offset;
-    vc += v_offset;
-    
-    // Convert to duty cycles (0.0 to 1.0)
-    // Normalize from [-0.5, 0.5] to [0.0, 1.0]
-    output.duty_a = va + 0.5f;
-    output.duty_b = vb + 0.5f;
-    output.duty_c = vc + 0.5f;
+
+    // 2. Sector determination
+    uint8_t sector;
+    if (beta_norm >= 0.0f) {
+        if (alpha_norm >= 0.0f) {
+            sector = (ONE_BY_SQRT3 * beta_norm > alpha_norm) ? 2 : 1;
+        } else {
+            sector = (-ONE_BY_SQRT3 * beta_norm > alpha_norm) ? 3 : 2;
+        }
+    } else {
+        if (alpha_norm >= 0.0f) {
+            sector = (-ONE_BY_SQRT3 * beta_norm > alpha_norm) ? 5 : 6;
+        } else {
+            sector = (ONE_BY_SQRT3 * beta_norm > alpha_norm) ? 4 : 5;
+        }
+    }
+    output.sector = (SVPWM_Sector_t)sector;
+
+    // 3. Calculate active vector times (normalized period = 1.0)
+    float t1, t2;
+    float pwm_period = 1.0f;
+
+    switch(sector) {
+        case 1:
+            t1 = (alpha_norm - ONE_BY_SQRT3 * beta_norm) * pwm_period;
+            t2 = (TWO_BY_SQRT3 * beta_norm * pwm_period);
+            output.duty_a = (pwm_period + t1 + t2) / 2.0f;
+            output.duty_b = output.duty_a - t1;
+            output.duty_c = output.duty_b - t2;
+            break;
+
+        case 2:
+            t1 = (alpha_norm + ONE_BY_SQRT3 * beta_norm) * pwm_period;
+            t2 = (-alpha_norm + ONE_BY_SQRT3 * beta_norm) * pwm_period;
+            output.duty_b = (pwm_period + t1 + t2) / 2.0f;
+            output.duty_a = output.duty_b - t2;
+            output.duty_c = output.duty_a - t1;
+            break;
+
+        case 3:
+            t1 = (TWO_BY_SQRT3 * beta_norm * pwm_period);
+            t2 = (-alpha_norm - ONE_BY_SQRT3 * beta_norm) * pwm_period;
+            output.duty_b = (pwm_period + t1 + t2) / 2.0f;
+            output.duty_c = output.duty_b - t1;
+            output.duty_a = output.duty_c - t2;
+            break;
+
+        case 4:
+            t1 = (-alpha_norm + ONE_BY_SQRT3 * beta_norm) * pwm_period;
+            t2 = (-TWO_BY_SQRT3 * beta_norm * pwm_period);
+            output.duty_c = (pwm_period + t1 + t2) / 2.0f;
+            output.duty_b = output.duty_c - t2;
+            output.duty_a = output.duty_b - t1;
+            break;
+
+        case 5:
+            t1 = (-alpha_norm - ONE_BY_SQRT3 * beta_norm) * pwm_period;
+            t2 = (alpha_norm - ONE_BY_SQRT3 * beta_norm) * pwm_period;
+            output.duty_c = (pwm_period + t1 + t2) / 2.0f;
+            output.duty_a = output.duty_c - t1;
+            output.duty_b = output.duty_a - t2;
+            break;
+
+        case 6:
+            t1 = (-TWO_BY_SQRT3 * beta_norm * pwm_period);
+            t2 = (alpha_norm + ONE_BY_SQRT3 * beta_norm) * pwm_period;
+            output.duty_a = (pwm_period + t1 + t2) / 2.0f;
+            output.duty_c = output.duty_a - t2;
+            output.duty_b = output.duty_c - t1;
+            break;
+            
+        default:
+            output.duty_a = 0.5f;
+            output.duty_b = 0.5f;
+            output.duty_c = 0.5f;
+            break;
+    }
     
     // Clamp duty cycles
     if (output.duty_a < 0.0f) output.duty_a = 0.0f;
@@ -291,4 +340,9 @@ float SVPWM_CalculateTriggerPoint(SVPWM_Sector_t sector, float duty_a, float dut
     }
     
     return trigger_point;
+}
+
+
+void SVPWM_test(void) {
+    
 }

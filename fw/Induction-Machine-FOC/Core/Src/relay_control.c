@@ -10,19 +10,19 @@ typedef struct {
 
 // Map logical relay index to hardware definitions
 static const Relay_Config_t Relay_Config[] = {
-    {RELAY9_GPIO_Port, RELAY9_Pin},
-    {RELAY12_GPIO_Port, RELAY12_Pin},
-    {RELAY11_GPIO_Port, RELAY11_Pin},
-    {RELAY10_GPIO_Port, RELAY10_Pin},
     
-   // {RELAY8_GPIO_Port, RELAY8_Pin},
+    //{RELAY12_GPIO_Port, RELAY12_Pin},
+    //{RELAY11_GPIO_Port, RELAY11_Pin},
+    // {RELAY10_GPIO_Port, RELAY10_Pin},
+    {RELAY9_GPIO_Port, RELAY9_Pin},
+    {RELAY8_GPIO_Port, RELAY8_Pin},
     {RELAY7_GPIO_Port, RELAY7_Pin},
     {RELAY6_GPIO_Port, RELAY6_Pin},
     {RELAY5_GPIO_Port, RELAY5_Pin},
-    // {RELAY4_GPIO_Port, RELAY4_Pin},
-    // {RELAY3_GPIO_Port, RELAY3_Pin},
-    // {RELAY2_GPIO_Port, RELAY2_Pin},
-    // {RELAY1_GPIO_Port, RELAY1_Pin},   
+    {RELAY4_GPIO_Port, RELAY4_Pin},
+    {RELAY3_GPIO_Port, RELAY3_Pin},
+    {RELAY2_GPIO_Port, RELAY2_Pin},
+    {RELAY1_GPIO_Port, RELAY1_Pin},   
 };
 
 #define RELAY_COUNT (sizeof(Relay_Config) / sizeof(Relay_Config[0]))

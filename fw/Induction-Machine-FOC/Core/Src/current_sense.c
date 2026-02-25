@@ -106,10 +106,10 @@ CurSense_Data_t CurrentSense_Read(void)
     uint32_t raw_Ib = HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_2);
 
     // ADC2 JDR1 -> Ic (Injected Rank 1 - Channel 3)
-    uint32_t raw_Ic = HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_1);
+    uint32_t raw_Ic = HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_3);
 
     // ADC2 JDR2 -> Vbus (Injected Rank 2 - Channel 4)
-    uint32_t raw_Vbus = HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_2);
+    uint32_t raw_Vbus = HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_4);
 
     float ia = Convert_ADC_To_Current(raw_Ia, offsets.offset_a);
     float ib = Convert_ADC_To_Current(raw_Ib, offsets.offset_b);

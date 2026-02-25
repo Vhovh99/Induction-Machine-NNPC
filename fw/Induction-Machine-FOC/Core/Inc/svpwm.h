@@ -52,7 +52,6 @@ typedef struct {
 typedef struct {
     float min_duty_window;      // Minimum duty cycle for valid shunt (e.g., 0.15 = 15%)
     float trigger_offset;       // Time offset from duty edge to trigger (0.0 to 1.0)
-    float max_modulation_index; // Maximum modulation index (typically 0.8165 or 0.907)
     uint32_t pwm_period_ticks;  // PWM period in timer ticks
 } SVPWM_Config_t;
 
@@ -66,9 +65,10 @@ void SVPWM_Init(SVPWM_Config_t *config);
  * @brief Calculate SVPWM duty cycles and determine valid shunts
  * @param v_alpha: Alpha-axis voltage reference (-1.0 to 1.0)
  * @param v_beta: Beta-axis voltage reference (-1.0 to 1.0)
+ * @param v_bus: DC Bus voltage (Volts)
  * @return SVPWM_Output_t structure with duty cycles and shunt selection
  */
-SVPWM_Output_t SVPWM_Calculate(float v_alpha, float v_beta);
+SVPWM_Output_t SVPWM_Calculate(float v_alpha, float v_beta, float v_bus);
 
 /**
  * @brief Get SVPWM sector from alpha-beta voltages
