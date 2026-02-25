@@ -1,11 +1,12 @@
 #include "svpwm.h"
 #include <math.h>
 #include <string.h>
-
+#include "main.h"
 // Constants for SVPWM calculation
 #define ONE_BY_SQRT3 0.577350269f
 #define TWO_BY_SQRT3 1.154700538f
 
+extern TIM_HandleTypeDef htim1;
 
 static SVPWM_Config_t config = {0};
 
@@ -63,8 +64,8 @@ SVPWM_Output_t SVPWM_Calculate(float v_alpha, float v_beta, float v_bus)
     // 1. Normalize voltages by vbus
     float alpha_norm, beta_norm;
     if (v_bus > 0.1f) {
-        alpha_norm = v_alpha / v_bus;
-        beta_norm = v_beta / v_bus;
+        alpha_norm = v_alpha; /// v_bus;
+        beta_norm = v_beta; /// v_bus;
     } else {
         alpha_norm = 0.0f;
         beta_norm = 0.0f;
@@ -89,7 +90,7 @@ SVPWM_Output_t SVPWM_Calculate(float v_alpha, float v_beta, float v_bus)
 
     // 3. Calculate active vector times (normalized period = 1.0)
     float t1, t2;
-    float pwm_period = 4249;
+    float pwm_period = 4250;
 
     switch(sector) {
         case 1:
@@ -141,9 +142,9 @@ SVPWM_Output_t SVPWM_Calculate(float v_alpha, float v_beta, float v_bus)
             break;
             
         default:
-            output.duty_a = 0.5f;
-            output.duty_b = 0.5f;
-            output.duty_c = 0.5f;
+            output.duty_a = pwm_period * 0.5f;
+            output.duty_b = pwm_period * 0.5f;
+            output.duty_c = pwm_period * 0.5f;
             break;
     }
        
@@ -160,7 +161,7 @@ SVPWM_Output_t SVPWM_Calculate(float v_alpha, float v_beta, float v_bus)
         // Default to center if no valid shunts (shouldn't happen in normal operation)
         output.trigger_point = 0.5f;
     }
-    
+    htim1.Instance->CCR4 = (uint32_t)(output.trigger_point * 4250);
     return output;
 }
 
@@ -183,7 +184,7 @@ uint8_t SVPWM_SelectShunts(SVPWM_Sector_t sector, float duty_a, float duty_b, fl
      * Sector-based selection picks the two phases with lowest duties:
      */
     
-    float min_duty_for_valid = 1.0f - config.min_duty_window;
+    float min_duty_for_valid = TIMER_MAX_DUTY - 100/*config.min_duty_window*/;
     
     // For each sector, select the two phases with the longest low-side ON time
     // This corresponds to the two phases with the LOWEST duty cycles

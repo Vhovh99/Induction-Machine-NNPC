@@ -85,8 +85,6 @@ void Error_Handler(void);
 #define RELAY3_GPIO_Port GPIOB
 #define RELAY4_Pin GPIO_PIN_14
 #define RELAY4_GPIO_Port GPIOB
-#define RELAY5_Pin GPIO_PIN_15
-#define RELAY5_GPIO_Port GPIOB
 #define RELAY6_Pin GPIO_PIN_6
 #define RELAY6_GPIO_Port GPIOC
 #define RELAY7_Pin GPIO_PIN_7

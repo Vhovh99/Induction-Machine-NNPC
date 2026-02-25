@@ -1,11 +1,15 @@
 #include "foc_control.h"
 #include "sine_op.h"
 #include "foc_math.h"
+#include "stm32g474xx.h"
 #include "stm32g4xx_hal.h"
+#include "stm32g4xx_hal_uart.h"
 #include "svpwm.h"
 #include "main.h"
+#include "stdio.h"
 
 extern TIM_HandleTypeDef htim1;
+extern UART_HandleTypeDef hlpuart1;
 
 static void PWM_WriteCompareShadow(uint32_t cmp_a, uint32_t cmp_b, uint32_t cmp_c)
 {
@@ -25,16 +29,20 @@ void open_loop_voltage_control(float Vd_ref, float Vq_ref, float angle_rad) {
     svpwm_output = SVPWM_Calculate(valpha_beta.alpha, valpha_beta.beta, 311);
 
     PWM_WriteCompareShadow(svpwm_output.duty_a, svpwm_output.duty_b, svpwm_output.duty_c);
+    char buffer[64];
+    int len = snprintf(buffer, sizeof(buffer), "%d,%d,%d\r\n", 
+                       svpwm_output.duty_a, svpwm_output.duty_b, svpwm_output.duty_c);
+    HAL_UART_Transmit(&hlpuart1, (uint8_t *)buffer, len, HAL_MAX_DELAY);
 }
 
 void svpwm_test(void) {
-    open_loop_voltage_control(0.6, 0.0, 0.0);
+    open_loop_voltage_control(0.4, 0.0, 0.0);
     HAL_Delay(500);
 
-    for (int i= 0; i < 100; i++) {
-        float mech_deg = (float)i * (360.0f / (float)100);
+    for (int i= 0; i < 500; i++) {
+        float mech_deg = (float)i * (360.0f / (float)500);
         float elec_deg = mech_deg * 2 /*MOTOR_POLE_PAIRS*/;
-        open_loop_voltage_control(0.6, 0.0, DEG_TO_RAD(elec_deg));
+        open_loop_voltage_control(0.8, 0.0, DEG_TO_RAD(elec_deg));
         HAL_Delay(3);
     }
     open_loop_voltage_control(0.0f, 0.0f, 0.0f);

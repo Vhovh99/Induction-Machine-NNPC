@@ -18,7 +18,7 @@ static const Relay_Config_t Relay_Config[] = {
     {RELAY8_GPIO_Port, RELAY8_Pin},
     {RELAY7_GPIO_Port, RELAY7_Pin},
     {RELAY6_GPIO_Port, RELAY6_Pin},
-    {RELAY5_GPIO_Port, RELAY5_Pin},
+    // {RELAY5_GPIO_Port, RELAY5_Pin},
     {RELAY4_GPIO_Port, RELAY4_Pin},
     {RELAY3_GPIO_Port, RELAY3_Pin},
     {RELAY2_GPIO_Port, RELAY2_Pin},
