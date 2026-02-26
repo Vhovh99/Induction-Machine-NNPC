@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define TIMER_MAX_DUTY 4250  // Timer counts for 100% duty at 20 kHz with 170 MHz timer clock
+#define PWM_PERIOD_TICKS 4250  // Timer counts for 100% duty at 20 kHz with 170 MHz timer clock
 
 /**
  * @brief SVPWM sector enumeration (1-6)
@@ -38,9 +38,9 @@ typedef enum {
  * Contains duty cycles, sector information, and shunt selection
  */
 typedef struct {
-    uint16_t duty_a;           // Phase A duty cycle 
-    uint16_t duty_b;           // Phase B duty cycle
-    uint16_t duty_c;           // Phase C duty cycle
+    float duty_a;           // Phase A duty cycle 
+    float duty_b;           // Phase B duty cycle
+    float duty_c;           // Phase C duty cycle
     SVPWM_Sector_t sector;  // SVPWM sector (1-6)
     Phase_t shunt1;         // First valid shunt for current measurement
     Phase_t shunt2;         // Second valid shunt for current measurement

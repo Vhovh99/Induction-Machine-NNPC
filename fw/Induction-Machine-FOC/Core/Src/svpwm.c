@@ -2,6 +2,7 @@
 #include <math.h>
 #include <string.h>
 #include "main.h"
+
 // Constants for SVPWM calculation
 #define ONE_BY_SQRT3 0.577350269f
 #define TWO_BY_SQRT3 1.154700538f
@@ -20,6 +21,10 @@ void SVPWM_Init(SVPWM_Config_t *cfg)
     }
     if (config.trigger_offset < 0.01f) {
         config.trigger_offset = 0.05f;   // 5% offset from duty edge
+    }
+ 
+    if (config.pwm_period_ticks <= 4250) {
+        config.pwm_period_ticks = 4250;  // Default to 20 kHz with 170 MHz timer clock
     }
 }
 
@@ -64,8 +69,8 @@ SVPWM_Output_t SVPWM_Calculate(float v_alpha, float v_beta, float v_bus)
     // 1. Normalize voltages by vbus
     float alpha_norm, beta_norm;
     if (v_bus > 0.1f) {
-        alpha_norm = v_alpha; /// v_bus;
-        beta_norm = v_beta; /// v_bus;
+        alpha_norm = v_alpha / v_bus;
+        beta_norm = v_beta / v_bus;
     } else {
         alpha_norm = 0.0f;
         beta_norm = 0.0f;
@@ -90,7 +95,7 @@ SVPWM_Output_t SVPWM_Calculate(float v_alpha, float v_beta, float v_bus)
 
     // 3. Calculate active vector times (normalized period = 1.0)
     float t1, t2;
-    float pwm_period = 4250;
+    float pwm_period = 1.0f;
 
     switch(sector) {
         case 1:
@@ -148,6 +153,13 @@ SVPWM_Output_t SVPWM_Calculate(float v_alpha, float v_beta, float v_bus)
             break;
     }
        
+    if (output.duty_a > 1.0f) output.duty_a = 1.0f;
+    if (output.duty_a < 0.0f) output.duty_a = 0.0f;
+    if (output.duty_b > 1.0f) output.duty_b = 1.0f;
+    if (output.duty_b < 0.0f) output.duty_b = 0.0f;
+    if (output.duty_c > 1.0f) output.duty_c = 1.0f;
+    if (output.duty_c < 0.0f) output.duty_c = 0.0f;
+
     // Select valid shunts
     output.valid = SVPWM_SelectShunts(output.sector, output.duty_a, output.duty_b, output.duty_c,
                                       &output.shunt1, &output.shunt2);
@@ -161,7 +173,9 @@ SVPWM_Output_t SVPWM_Calculate(float v_alpha, float v_beta, float v_bus)
         // Default to center if no valid shunts (shouldn't happen in normal operation)
         output.trigger_point = 0.5f;
     }
-    htim1.Instance->CCR4 = (uint32_t)(output.trigger_point * 4250);
+    if (output.trigger_point > 1.0f) output.trigger_point = 1.0f;
+    if (output.trigger_point < 0.0f) output.trigger_point = 0.0f;
+
     return output;
 }
 
@@ -184,7 +198,7 @@ uint8_t SVPWM_SelectShunts(SVPWM_Sector_t sector, float duty_a, float duty_b, fl
      * Sector-based selection picks the two phases with lowest duties:
      */
     
-    float min_duty_for_valid = TIMER_MAX_DUTY - 100/*config.min_duty_window*/;
+    float min_duty_for_valid = 1.0f - config.min_duty_window;
     
     // For each sector, select the two phases with the longest low-side ON time
     // This corresponds to the two phases with the LOWEST duty cycles

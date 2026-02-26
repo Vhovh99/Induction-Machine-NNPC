@@ -22,8 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "foc_control.h"
-#include "stm32g4xx_hal_gpio.h"
-#include "stm32g4xx_hal_tim.h"
+#include "svpwm.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -200,7 +199,15 @@ int main(void)
   MX_USART1_UART_Init();
   MX_LPUART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  SVPWM_Config_t svpwm_config = {
+      .min_duty_window = 0.15f,  // 15% minimum duty for valid shunt
+      .trigger_offset = 0.05f,   // 5% offset from duty edge
+      .pwm_period_ticks = PWM_PERIOD_TICKS
+  };
+  SVPWM_Init(&svpwm_config);
+
   HAL_ADCEx_InjectedStart_IT(&hadc1);
+
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1 );
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2 );
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3 );
