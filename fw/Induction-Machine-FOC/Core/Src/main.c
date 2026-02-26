@@ -670,7 +670,7 @@ static void MX_TIM1_Init(void)
   }
   sBreakInputConfig.Source = TIM_BREAKINPUTSOURCE_BKIN;
   sBreakInputConfig.Enable = TIM_BREAKINPUTSOURCE_ENABLE;
-  sBreakInputConfig.Polarity = TIM_BREAKINPUTSOURCE_POLARITY_LOW;
+  sBreakInputConfig.Polarity = TIM_BREAKINPUTSOURCE_POLARITY_HIGH;
   if (HAL_TIMEx_ConfigBreakInput(&htim1, TIM_BREAKINPUT_BRK, &sBreakInputConfig) != HAL_OK)
   {
     Error_Handler();
@@ -706,13 +706,13 @@ static void MX_TIM1_Init(void)
   sBreakDeadTimeConfig.DeadTime = 200;
   sBreakDeadTimeConfig.BreakState = TIM_BREAK_ENABLE;
   sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_LOW;
-  sBreakDeadTimeConfig.BreakFilter = 15;
+  sBreakDeadTimeConfig.BreakFilter = 0;
   sBreakDeadTimeConfig.BreakAFMode = TIM_BREAK_AFMODE_INPUT;
   sBreakDeadTimeConfig.Break2State = TIM_BREAK2_DISABLE;
   sBreakDeadTimeConfig.Break2Polarity = TIM_BREAK2POLARITY_HIGH;
   sBreakDeadTimeConfig.Break2Filter = 0;
   sBreakDeadTimeConfig.Break2AFMode = TIM_BREAK_AFMODE_INPUT;
-  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_ENABLE;
+  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
   if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK)
   {
     Error_Handler();
@@ -805,7 +805,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, RELAY1_Pin|RELAY2_Pin|RELAY4_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, RELAY1_Pin|RELAY2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOC, RELAY6_Pin|RELAY7_Pin|RELAY8_Pin|RELAY9_Pin, GPIO_PIN_RESET);
@@ -830,18 +830,18 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PB2 PB10 PB13 PB15
-                           PB4 PB5 PB6 PB7
-                           PB8 PB9 */
-  GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_10|GPIO_PIN_13|GPIO_PIN_15
-                          |GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7
-                          |GPIO_PIN_8|GPIO_PIN_9;
+  /*Configure GPIO pins : PB2 PB10 PB13 PB14
+                           PB15 PB4 PB5 PB6
+                           PB7 PB8 PB9 */
+  GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_10|GPIO_PIN_13|GPIO_PIN_14
+                          |GPIO_PIN_15|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6
+                          |GPIO_PIN_7|GPIO_PIN_8|GPIO_PIN_9;
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : RELAY1_Pin RELAY2_Pin RELAY4_Pin */
-  GPIO_InitStruct.Pin = RELAY1_Pin|RELAY2_Pin|RELAY4_Pin;
+  /*Configure GPIO pins : RELAY1_Pin RELAY2_Pin */
+  GPIO_InitStruct.Pin = RELAY1_Pin|RELAY2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
