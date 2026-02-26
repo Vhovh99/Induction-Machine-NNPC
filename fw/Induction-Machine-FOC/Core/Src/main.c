@@ -22,7 +22,13 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "foc_control.h"
+#include "stm32g4xx_hal.h"
+#include "stm32g4xx_hal_uart.h"
 #include "svpwm.h"
+#include "encoder.h"
+#include <stdio.h>
+#include <string.h>
+#include "foc_math.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -92,7 +98,7 @@ typedef struct {
 #define TELEMETRY_BUFFER_SIZE 128
 static uint8_t telemetry_buffer[TELEMETRY_BUFFER_SIZE];
 
-
+Encoder_Handle_t encoder = {0};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -112,6 +118,25 @@ static void MX_LPUART1_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+void PWM_START(void)
+{
+    // HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1 );
+    // HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2 );
+    // HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3 );
+    // // Complementary PWM outputs (REQUIRED for 3-phase inverter)
+    // HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_1);  // CH1N (UL_PWM on PA7)
+    // HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_2);  // CH2N (VL_PWM on PB0)
+    // HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_3);  // CH3N (WL_PWM on PB1)
+
+    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4 );
+}
+
+void PWM_STOP(void)
+{
+    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_ALL);
+    HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_ALL);
+}
+
 static inline int32_t ClampQ15(int32_t value)
 {
     if (value > 32767) {
@@ -206,17 +231,13 @@ int main(void)
   };
   SVPWM_Init(&svpwm_config);
 
+  Encoder_Init(&encoder, &htim2, 2000);
+
   HAL_ADCEx_InjectedStart_IT(&hadc1);
 
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1 );
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2 );
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3 );
-  // Complementary PWM outputs (REQUIRED for 3-phase inverter)
-  HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_1);  // CH1N (UL_PWM on PA7)
-  HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_2);  // CH2N (VL_PWM on PB0)
-  HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_3);  // CH3N (WL_PWM on PB1)
+  Encoder_Start(&encoder);
 
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4 );
+  PWM_START();
 
   // HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_SET);
   /* USER CODE END 2 */
@@ -230,10 +251,17 @@ int main(void)
     /* USER CODE BEGIN 3 */
 
     // if (ADC_Measure_VTSO() > 150.0f) {
-    //     HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_ALL);
+    //     PWM_STOP();
     // }
 
-    svpwm_test();
+    // svpwm_test();
+
+    float temp = Encoder_GetMechanicalAngleRad(&encoder); 
+    temp = RAD_TO_DEG(temp);
+    char buf [64];
+    sprintf(buf, "%.2f\r\n", temp);
+    HAL_UART_Transmit(&hlpuart1, (uint8_t*)buf, strlen(buf), HAL_MAX_DELAY);
+    HAL_Delay(10);
 
   }
   /* USER CODE END 3 */
@@ -705,18 +733,18 @@ static void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 0;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 4294967295;
+  htim2.Init.Period = 65535;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  sConfig.EncoderMode = TIM_ENCODERMODE_TI1;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
   sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
   sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
   sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
-  sConfig.IC1Filter = 0;
+  sConfig.IC1Filter = 5;
   sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
   sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
   sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
-  sConfig.IC2Filter = 0;
+  sConfig.IC2Filter = 5;
   if (HAL_TIM_Encoder_Init(&htim2, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -731,7 +759,7 @@ static void MX_TIM2_Init(void)
   sEncoderIndexConfig.Prescaler = TIM_ENCODERINDEX_PRESCALER_DIV1;
   sEncoderIndexConfig.Filter = 5;
   sEncoderIndexConfig.FirstIndexEnable = DISABLE;
-  sEncoderIndexConfig.Position = TIM_ENCODERINDEX_POSITION_00;
+  sEncoderIndexConfig.Position = TIM_ENCODERINDEX_POSITION_11;
   sEncoderIndexConfig.Direction = TIM_ENCODERINDEX_DIRECTION_UP_DOWN;
   if (HAL_TIMEx_ConfigEncoderIndex(&htim2, &sEncoderIndexConfig) != HAL_OK)
   {
@@ -764,7 +792,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, RELAY1_Pin|RELAY2_Pin|RELAY3_Pin|RELAY4_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, RELAY1_Pin|RELAY2_Pin|RELAY4_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOC, RELAY6_Pin|RELAY7_Pin|RELAY8_Pin|RELAY9_Pin, GPIO_PIN_RESET);
@@ -789,18 +817,18 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PB2 PB10 PB15 PB4
-                           PB5 PB6 PB7 PB8
-                           PB9 */
-  GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_10|GPIO_PIN_15|GPIO_PIN_4
-                          |GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7|GPIO_PIN_8
-                          |GPIO_PIN_9;
+  /*Configure GPIO pins : PB2 PB10 PB13 PB15
+                           PB4 PB5 PB6 PB7
+                           PB8 PB9 */
+  GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_10|GPIO_PIN_13|GPIO_PIN_15
+                          |GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7
+                          |GPIO_PIN_8|GPIO_PIN_9;
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : RELAY1_Pin RELAY2_Pin RELAY3_Pin RELAY4_Pin */
-  GPIO_InitStruct.Pin = RELAY1_Pin|RELAY2_Pin|RELAY3_Pin|RELAY4_Pin;
+  /*Configure GPIO pins : RELAY1_Pin RELAY2_Pin RELAY4_Pin */
+  GPIO_InitStruct.Pin = RELAY1_Pin|RELAY2_Pin|RELAY4_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -834,6 +862,9 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
 
     // Set PC9 high
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+
+    Encoder_Update(&encoder,1/20000.0f); // 20 kHz sampling rate
+
     // Set PC9 low
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
 

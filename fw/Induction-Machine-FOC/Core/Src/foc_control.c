@@ -38,7 +38,7 @@ void open_loop_voltage_control(float Vd_ref, float Vq_ref, float angle_rad) {
 }
 
 void svpwm_test(void) {
-    open_loop_voltage_control(0.0 * 311, 0.0 * 311, 0.0);
+    open_loop_voltage_control(0.6 * 311, 0.0 * 311, 0.0);
     HAL_Delay(500);
 
     for (int i= 0; i < 500; i++) {

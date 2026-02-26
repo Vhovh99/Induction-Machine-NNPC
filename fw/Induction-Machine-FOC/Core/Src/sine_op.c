@@ -13,7 +13,7 @@ extern CORDIC_HandleTypeDef hcordic;
  * @param angle: Angle in radians
  * @retval Sine value (-1.0 to 1.0)
  */
-static inline float cordic_sin(float angle)
+float cordic_sin(float angle)
 {
     const float TWO_PI = 6.28318530718f;
     const float PI = 3.14159265359f;
@@ -55,7 +55,7 @@ static inline float cordic_sin(float angle)
     return (float)sine_q31 * Q31_INV;
 }
 
-static inline float cordic_cos(float angle)
+float cordic_cos(float angle)
 {
     const float PI_2 = 1.57079632679f; // PI/2
     return cordic_sin(angle + PI_2);

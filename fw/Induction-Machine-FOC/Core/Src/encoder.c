@@ -28,11 +28,10 @@ void Encoder_Init(Encoder_Handle_t *enc, TIM_HandleTypeDef *htim, uint32_t ppr)
     enc->speed_rad_per_sec = 0.0f;
     enc->speed_rpm = 0.0f;
     enc->speed_rpm_filtered = 0.0f;
-    enc->delta_counts_last = 0;
     enc->position_counts_old = 0;
-    enc->time_accumulated_sec = 0.0f;
-    enc->speed_sample_count = 0;
-    enc->index_found = 0;
+    enc->index_offset = 0;
+    enc->index_first_detected = 0;
+    enc->drift_accumulated = 0;
 }
 
 void Encoder_Start(Encoder_Handle_t *enc)
@@ -70,17 +69,33 @@ void Encoder_Update(Encoder_Handle_t *enc, float dt_sec)
     if (index_event) {
         __HAL_TIM_CLEAR_FLAG(htim, TIM_FLAG_IDX);
 
-        // Treat index as absolute mechanical zero.
-        // Rebase software position to 0 *now*.
-        enc->position_counts = 0;
+        if (!enc->index_first_detected) {
+            // First index detection - save current position as reference offset
+            enc->index_offset = enc->position_counts;
+            enc->index_first_detected = 1;
+            enc->drift_accumulated = 0;
+        } else {
+            // Subsequent index detections - use it to correct accumulated drift
+            // Calculate position relative to the first index offset
+            int32_t relative_pos = enc->position_counts - enc->index_offset;
+            
+            // How many complete revolutions should we have completed?
+            int32_t expected_revs = relative_pos / (int32_t)enc->counts_per_rev;
+            
+            // Where should we be? (at offset + expected_revs * counts_per_rev)
+            int32_t expected_pos = enc->index_offset + expected_revs * (int32_t)enc->counts_per_rev;
+            
+            // What's the accumulated drift at index point?
+            int32_t drift = enc->position_counts - expected_pos;
+            
+            // Apply drift correction to remove accumulated error
+            enc->position_counts -= drift;
+            enc->drift_accumulated = drift;
+        }
 
-        // Rebase last_count to current counter value so next delta is correct.
+        // Rebase last_count to current counter value so next delta is correct
         enc->last_count = cnt;
-
         enc->position_counts_old = enc->position_counts;
-        enc->time_accumulated_sec = 0.0f;
-        enc->speed_sample_count = 0;
-        enc->index_found = 1;
         return;
     } else {
         // Normal incremental update            
@@ -95,40 +110,8 @@ void Encoder_Update(Encoder_Handle_t *enc, float dt_sec)
 
         enc->position_counts += delta;
         enc->last_count = cnt;
-        enc->delta_counts_last = delta;
     }
-
-
     
-    // Accumulate time and samples
-    enc->time_accumulated_sec += dt_sec;
-    enc->speed_sample_count++;
-    
-    // Calculate speed every N samples or when enough time has elapsed
-    const uint8_t SPEED_SAMPLES = 10;  // Measure over 10 samples to reduce quantization
-    const float MIN_TIME_WINDOW = 0.0005f;  // 0.5ms minimum
-    
-    if (enc->speed_sample_count >= SPEED_SAMPLES || enc->time_accumulated_sec >= MIN_TIME_WINDOW) {
-        int32_t total_delta = enc->position_counts - enc->position_counts_old;
-        float counts_per_sec = (float)total_delta / enc->time_accumulated_sec;
-        float rev_per_sec = counts_per_sec / (float)enc->counts_per_rev;
-        
-        enc->speed_rpm = rev_per_sec * 60.0f;
-        
-        // Spike reject using physical max
-        const float MAX_PHYSICAL_RPM = 6000.0f;
-        if (enc->speed_rpm > -MAX_PHYSICAL_RPM && enc->speed_rpm < MAX_PHYSICAL_RPM) {
-            // 1st order LPF
-            enc->speed_rpm_filtered = lpf1(enc->speed_rpm_filtered, enc->speed_rpm, 0.85f);
-        }
-        
-        enc->speed_rad_per_sec = (enc->speed_rpm_filtered / 60.0f) * ENCODER_TWO_PI;
-        
-        // Reset accumulator
-        enc->position_counts_old = enc->position_counts;
-        enc->time_accumulated_sec = 0.0f;
-        enc->speed_sample_count = 0;
-    }
 }
 
 float Encoder_GetMechanicalAngleRad(const Encoder_Handle_t *enc)

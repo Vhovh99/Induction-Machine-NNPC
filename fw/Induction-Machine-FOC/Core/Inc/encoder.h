@@ -17,12 +17,13 @@ typedef struct {
   float speed_rad_per_sec;
   float speed_rpm;
   float speed_rpm_filtered;
-  int32_t delta_counts_last;
   // Multi-sample speed measurement
   int32_t position_counts_old;
-  float time_accumulated_sec;
-  uint8_t speed_sample_count;
-  bool index_found;
+
+  // Index-based drift correction
+  int32_t index_offset;           // Position at first index detection
+  uint8_t index_first_detected;   // Flag: first index already detected?
+  int32_t drift_accumulated;      // Last accumulated drift correction
 } Encoder_Handle_t;
 
 void Encoder_Init(Encoder_Handle_t *enc, TIM_HandleTypeDef *htim, uint32_t ppr);
