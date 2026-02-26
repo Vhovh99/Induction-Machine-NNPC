@@ -138,13 +138,13 @@ static void MX_LPUART1_UART_Init(void);
 /* USER CODE BEGIN 0 */
 void PWM_START(void)
 {
-    // HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1 );
-    // HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2 );
-    // HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3 );
-    // // Complementary PWM outputs (REQUIRED for 3-phase inverter)
-    // HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_1);  // CH1N (UL_PWM on PA7)
-    // HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_2);  // CH2N (VL_PWM on PB0)
-    // HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_3);  // CH3N (WL_PWM on PB1)
+    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1 );
+    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2 );
+    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3 );
+    // Complementary PWM outputs (REQUIRED for 3-phase inverter)
+    HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_1);  // CH1N (UL_PWM on PA7)
+    HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_2);  // CH2N (VL_PWM on PB0)
+    HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_3);  // CH3N (WL_PWM on PB1)
 
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4 );
 }
@@ -155,16 +155,6 @@ void PWM_STOP(void)
     HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_ALL);
 }
 
-static inline int32_t ClampQ15(int32_t value)
-{
-    if (value > 32767) {
-        return 32767;
-    }
-    if (value < -32767) {
-        return -32767;
-    }
-    return value;
-}
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
@@ -255,7 +245,7 @@ int main(void)
   CurrentSense_Calibrate();
 
   HAL_ADCEx_InjectedStop(&hadc1);
-  HAL_ADCEx_InjectedStart_IT(&hadc1);
+  // HAL_ADCEx_InjectedStart_IT(&hadc1);
 
   Encoder_Start(&encoder);
 
@@ -273,18 +263,18 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-    // if (ADC_Measure_VTSO() > 150.0f) {
-    //     PWM_STOP();
-    // }
+    if (ADC_Measure_VTSO() > 100.0f) {
+        PWM_STOP();
+    }
 
-    // svpwm_test();
+    svpwm_test();
 
-    float temp = Encoder_GetMechanicalAngleRad(&encoder); 
-    temp = RAD_TO_DEG(temp);
-    char buf [64];
-    sprintf(buf, "%.2f\r\n", temp);
-    HAL_UART_Transmit(&hlpuart1, (uint8_t*)buf, strlen(buf), HAL_MAX_DELAY);
-    HAL_Delay(10);
+    // float temp = Encoder_GetMechanicalAngleRad(&encoder); 
+    // temp = RAD_TO_DEG(temp);
+    // char buf [64];
+    // sprintf(buf, "%.2f\r\n", temp);
+    // HAL_UART_Transmit(&hlpuart1, (uint8_t*)buf, strlen(buf), HAL_MAX_DELAY);
+    // HAL_Delay(10);
 
   }
   /* USER CODE END 3 */
@@ -681,10 +671,10 @@ static void MX_TIM1_Init(void)
   sBreakInputConfig.Source = TIM_BREAKINPUTSOURCE_BKIN;
   sBreakInputConfig.Enable = TIM_BREAKINPUTSOURCE_ENABLE;
   sBreakInputConfig.Polarity = TIM_BREAKINPUTSOURCE_POLARITY_LOW;
-  // if (HAL_TIMEx_ConfigBreakInput(&htim1, TIM_BREAKINPUT_BRK, &sBreakInputConfig) != HAL_OK)
-  // {
-  //   Error_Handler();
-  // }
+  if (HAL_TIMEx_ConfigBreakInput(&htim1, TIM_BREAKINPUT_BRK, &sBreakInputConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
   sConfigOC.Pulse = 0;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
@@ -715,7 +705,7 @@ static void MX_TIM1_Init(void)
   sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
   sBreakDeadTimeConfig.DeadTime = 200;
   sBreakDeadTimeConfig.BreakState = TIM_BREAK_ENABLE;
-  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_LOW;
   sBreakDeadTimeConfig.BreakFilter = 15;
   sBreakDeadTimeConfig.BreakAFMode = TIM_BREAK_AFMODE_INPUT;
   sBreakDeadTimeConfig.Break2State = TIM_BREAK2_DISABLE;
@@ -898,11 +888,15 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
     FOC_Control_Loop(&motor_control, &motor_params, 
                       currents.Ia, currents.Ib, 
                       0.0f, 0.0f, 
-                      theta_m, &new_svpwm);
+                      theta_m, currents.Vbus, &new_svpwm);
     PWM_WriteCompareShadow(new_svpwm.duty_a, new_svpwm.duty_b, new_svpwm.duty_c, new_svpwm.trigger_point);
     // Store for next cycle
     last_svpwm = new_svpwm;
     
+    // char buf[64];
+    // sprintf(buf, "%.0f,%.0f,%.0f,%.0f\r\n", new_svpwm.duty_a * PWM_PERIOD_TICKS, new_svpwm.duty_b * PWM_PERIOD_TICKS, new_svpwm.duty_c * PWM_PERIOD_TICKS, theta_m);
+    // HAL_UART_Transmit(&hlpuart1, (uint8_t*)buf, strlen(buf), HAL_MAX_DELAY);
+
     // Set PC9 low
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
 

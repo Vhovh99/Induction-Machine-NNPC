@@ -10,8 +10,11 @@
 #include "stdio.h"
 #include "encoder.h"
 
+
 extern TIM_HandleTypeDef htim1;
 extern UART_HandleTypeDef hlpuart1;
+
+extern Encoder_Handle_t encoder;
 
 void PWM_WriteCompareShadow(float cmp_a, float cmp_b, float cmp_c, float cmp_trigger)
 {
@@ -85,18 +88,49 @@ void open_loop_voltage_control(float Vd_ref, float Vq_ref, float angle_rad) {
 }
 
 void svpwm_test(void) {
-    open_loop_voltage_control(0.6 * 311, 0.0 * 311, 0.0);
-    HAL_Delay(500);
+    // open_loop_voltage_control(0.0 * 311, 0.0 * 311, 0.0);
+    // HAL_Delay(500);
 
-    for (int i= 0; i < 500; i++) {
-        float mech_deg = (float)i * (360.0f / (float)500);
-        float elec_deg = mech_deg * 2 /*MOTOR_POLE_PAIRS*/;
-        open_loop_voltage_control(0.6 * 311, 0.0 * 311, DEG_TO_RAD(elec_deg));
-        HAL_Delay(3);
+    // for (int i= 0; i < 500; i++) {
+    //     float mech_deg = (float)i * (360.0f / (float)500);
+    //     float elec_deg = mech_deg * 2 /*MOTOR_POLE_PAIRS*/;
+    //     open_loop_voltage_control(0.0 * 311, 0.0 * 311, DEG_TO_RAD(elec_deg));
+    //     HAL_Delay(3);
+    // }
+    // open_loop_voltage_control(0.0f, 0.0f, 0.0f);
+
+    float v_bus = 311.0f;          // Your DC Bus Voltage (e.g. 24V for testing)
+    float max_freq = 5.0f;        // Target frequency in Hz (keep it low for open loop!)
+    float voltage_amplitude = 22.0f; // Start with small voltage  
+
+    open_loop_voltage_control(voltage_amplitude, 0.0f, 0.0f);
+    HAL_Delay(1000); 
+
+    float theta = 0.0f;
+    float dt = 0.001f; // 1ms delay = 1kHz loop approximation
+    float d_theta = 2.0f * 3.14159f * max_freq * dt; 
+
+    // Rotate for 5 seconds
+    for (int i= 0; i < 5000; i++) {
+        theta += d_theta;
+        if(theta > 6.2831f) theta -= 6.2831f;
+        
+        // In open loop, we just apply a rotating voltage vector.
+        // We put all magnitude in D (or Q, doesn't matter, it's just a vector magnitude)
+        // effectively Vd=3V, Vq=0V in a frame that is ROTATING at 5Hz.
+        open_loop_voltage_control(voltage_amplitude, 0.0f, theta);
+        Encoder_Update(&encoder, dt);
+        // float temp = Encoder_GetMechanicalAngleRad(&encoder); 
+        // char buf [64];
+        // int len =  sprintf(buf, "%.2f\r\n", RAD_TO_DEG(temp));
+        // HAL_UART_Transmit(&hlpuart1, (uint8_t*)buf, len, 1);
+        // HAL_Delay(1); // Wait 1ms
     }
-    open_loop_voltage_control(0.0f, 0.0f, 0.0f);
-}
 
+    // 4. Stop
+    open_loop_voltage_control(0.0f, 0.0f, 0.0f);
+
+}
 
 static inline void Flux_Slip_Update(Motor_Control_t *control, const Motor_Parameters_t *params) {
 
@@ -123,7 +157,7 @@ static inline void Flux_Slip_Update(Motor_Control_t *control, const Motor_Parame
 void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
                       float ia, float ib,
                       float id_ref_cmnd, float iq_ref_cmnd,
-                      float theta_m, SVPWM_Output_t *out_svpwm) {
+                      float theta_m, float vbus, SVPWM_Output_t *out_svpwm) {
     
     Clarke_Out_t clarke;
     Park_Out_t   park;
@@ -181,7 +215,7 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
     Park_Out_t v_dq = ctrl->v_dq;
     Clarke_Out_t valpha_beta = Inv_Park_Transform(v_dq.d, v_dq.q, sin_theta, cos_theta);
 
-    svpwm_output = SVPWM_Calculate(valpha_beta.alpha, valpha_beta.beta, 311);
+    svpwm_output = SVPWM_Calculate(valpha_beta.alpha, valpha_beta.beta, vbus);
 
     if (out_svpwm != NULL) {
         *out_svpwm = svpwm_output;

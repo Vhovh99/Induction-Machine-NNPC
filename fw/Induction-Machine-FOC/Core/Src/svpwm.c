@@ -153,12 +153,12 @@ SVPWM_Output_t SVPWM_Calculate(float v_alpha, float v_beta, float v_bus)
             break;
     }
        
-    if (output.duty_a > 1.0f) output.duty_a = 1.0f;
-    if (output.duty_a < 0.0f) output.duty_a = 0.0f;
-    if (output.duty_b > 1.0f) output.duty_b = 1.0f;
-    if (output.duty_b < 0.0f) output.duty_b = 0.0f;
-    if (output.duty_c > 1.0f) output.duty_c = 1.0f;
-    if (output.duty_c < 0.0f) output.duty_c = 0.0f;
+    if (output.duty_a > 0.95f) output.duty_a = 0.95f;
+    if (output.duty_a < 0.05f) output.duty_a = 0.05f;
+    if (output.duty_b > 0.95f) output.duty_b = 0.95f;
+    if (output.duty_b < 0.05f) output.duty_b = 0.05f;
+    if (output.duty_c > 0.95f) output.duty_c = 0.95f;
+    if (output.duty_c < 0.05f) output.duty_c = 0.05f;
 
     // Select valid shunts
     output.valid = SVPWM_SelectShunts(output.sector, output.duty_a, output.duty_b, output.duty_c,
@@ -173,8 +173,8 @@ SVPWM_Output_t SVPWM_Calculate(float v_alpha, float v_beta, float v_bus)
         // Default to center if no valid shunts (shouldn't happen in normal operation)
         output.trigger_point = 0.5f;
     }
-    if (output.trigger_point > 1.0f) output.trigger_point = 1.0f;
-    if (output.trigger_point < 0.0f) output.trigger_point = 0.0f;
+    if (output.trigger_point > 0.95f) output.trigger_point = 0.95f;
+    if (output.trigger_point < 0.05f) output.trigger_point = 0.05f;
 
     return output;
 }

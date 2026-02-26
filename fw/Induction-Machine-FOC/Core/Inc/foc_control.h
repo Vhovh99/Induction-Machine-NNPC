@@ -78,6 +78,6 @@ void Motor_Init(const Motor_Parameters_t *params, Motor_Control_t *ctrl);
 void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
                       float ia, float ib,
                       float id_ref_cmnd, float iq_ref_cmnd,
-                      float theta_m, SVPWM_Output_t *out_svpwm);
+                      float theta_m, float vbus, SVPWM_Output_t *out_svpwm);
 void PWM_WriteCompareShadow(float cmp_a, float cmp_b, float cmp_c, float cmp_trigger);
 #endif /* __FOC_CONTROL_H */
