@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "foc_math.h"
+#include "current_sense.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -65,6 +66,21 @@ TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 
 /* USER CODE BEGIN PV */
+const Motor_Parameters_t motor_params = {
+    .Rs = 0.039f,         // Stator resistance (Ohms)
+    .Rr = 0.031f,         // Rotor resistance (Ohms)
+    .Lm = 0.15f,          // Magnetizing inductance (H)
+    .Lr = 0.17f,          // Rotor inductance (H)
+    .pole_pairs = 2,      // Number of pole pairs
+    .Tr = 0.17f / 0.031f, // Rotor time constant (s)
+    .id_ref = 0.0f,       // Initial d-axis current reference (A)
+    .iq_ref = 0.0f,       // Initial q-axis current reference (A)
+    .id_max = 2.0f,       // Maximum d-axis current (A)
+    .iq_max = 2.0f,       // Maximum q-axis current (A)
+    .Ts = 1 / 2000.0f     // Control loop period (s)
+};
+
+Motor_Control_t motor_control = {0};
 
 /* Temperature Variable */
 float temperature_VTSO = 0.0f;
@@ -99,6 +115,8 @@ typedef struct {
 static uint8_t telemetry_buffer[TELEMETRY_BUFFER_SIZE];
 
 Encoder_Handle_t encoder = {0};
+CurSense_Data_t  currents = {0};
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -233,13 +251,18 @@ int main(void)
 
   Encoder_Init(&encoder, &htim2, 2000);
 
+  CurrentSense_Init();
+  CurrentSense_Calibrate();
+
+  HAL_ADCEx_InjectedStop(&hadc1);
   HAL_ADCEx_InjectedStart_IT(&hadc1);
 
   Encoder_Start(&encoder);
 
+  Motor_Init(&motor_params, &motor_control);
+
   PWM_START();
 
-  // HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_SET);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -860,11 +883,26 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
         return;
     }
 
+    // Better approach with shunt selection:
+    static SVPWM_Output_t last_svpwm = {0};
+
     // Set PC9 high
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
 
-    Encoder_Update(&encoder,1/20000.0f); // 20 kHz sampling rate
+    currents = CurrentSense_ReadWithShuntSelection(last_svpwm.shunt1, last_svpwm.shunt2);
 
+    Encoder_Update(&encoder,1/20000.0f); // 20 kHz sampling rate
+    float theta_m = Encoder_GetMechanicalAngleRad(&encoder);
+
+    SVPWM_Output_t new_svpwm = {0};
+    FOC_Control_Loop(&motor_control, &motor_params, 
+                      currents.Ia, currents.Ib, 
+                      0.0f, 0.0f, 
+                      theta_m, &new_svpwm);
+    PWM_WriteCompareShadow(new_svpwm.duty_a, new_svpwm.duty_b, new_svpwm.duty_c, new_svpwm.trigger_point);
+    // Store for next cycle
+    last_svpwm = new_svpwm;
+    
     // Set PC9 low
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
 

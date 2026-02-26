@@ -22,10 +22,9 @@ typedef struct {
  * Assumes balanced system where Ia + Ib + Ic = 0, so Ic is not needed.
  * @param Ia Phase A current
  * @param Ib Phase B current
- * @param Ic Phase C current
  * @return Clarke_Out_t Structure containing alpha and beta components
  */
-Clarke_Out_t Clarke_Transform(float Ia, float Ib, float Ic);
+Clarke_Out_t Clarke_Transform(float Ia, float Ib);
 
 /**
  * @brief Park Transformation
@@ -48,5 +47,12 @@ Park_Out_t Park_Transform(float alpha, float beta, float sin_theta, float cos_th
  * @return Clarke_Out_t Structure containing alpha and beta components
  */
 Clarke_Out_t Inv_Park_Transform(float d, float q, float sin_theta, float cos_theta);
+
+/**
+ * @brief Wraps an angle to the range [0, 2π).
+ * @param angle Angle in radians
+ * @return Wrapped angle in radians
+ */
+float WrapAngle0To2Pi(float angle);
 
 #endif /* FOC_MATH_H */

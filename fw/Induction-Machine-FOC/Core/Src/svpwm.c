@@ -348,8 +348,3 @@ float SVPWM_CalculateTriggerPoint(SVPWM_Sector_t sector, float duty_a, float dut
     
     return trigger_point;
 }
-
-
-void SVPWM_test(void) {
-    
-}

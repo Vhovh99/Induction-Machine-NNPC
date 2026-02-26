@@ -1,11 +1,11 @@
 #include "foc_math.h"
 
-Clarke_Out_t Clarke_Transform(float Ia, float Ib, float Ic) {
+Clarke_Out_t Clarke_Transform(float Ia, float Ib) {
     Clarke_Out_t out;
-    // I_alpha = Ia - (1/2) * Ib - (1/2)*Ic
-    // I_beta = (√3/2)*Ib - (√3/2)*Ic
-    out.alpha = Ia - 0.5f * Ib - 0.5f * Ic;
-    out.beta = 0.866025403784f * (Ib - Ic);  // √3/2 ≈ 0.866025403784
+    // I_alpha = Ia
+    // I_beta = (√3/3)*Ia + (2√3/3)*Ib
+    out.alpha = Ia;
+    out.beta = 0.57735026919f * Ia + 1.15470053838f * Ib;  // √3/3 and 2√3/3
     return out;
 }
 
@@ -25,4 +25,16 @@ Clarke_Out_t Inv_Park_Transform(float d, float q, float sin_theta, float cos_the
     out.alpha = d * cos_theta - q * sin_theta;
     out.beta = d * sin_theta + q * cos_theta;
     return out;
+}
+
+
+float WrapAngle0To2Pi(float angle) {
+    const float TWO_PI = 6.28318530718f;
+    while (angle >= TWO_PI) {
+        angle -= TWO_PI;
+    }
+    while (angle < 0.0f) {
+        angle += TWO_PI;
+    }
+    return angle;
 }
