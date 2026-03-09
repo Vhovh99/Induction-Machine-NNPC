@@ -8,9 +8,9 @@
 // HARDWARE PARAMETERS 
 // ==============================================================================
 // Shunt resistor value in Ohms
-#define LISTEN_R_SHUNT         0.06f 
+#define LISTEN_R_SHUNT         0.1f 
 // Operational Amplifier Gain (V/V)
-#define LISTEN_OPAMP_GAIN      2.1   
+#define LISTEN_OPAMP_GAIN      15.0  
 // ADC Reference Voltage (V)
 #define ADC_VREF               3.3f
 // ADC Resolution (2^12 - 1)

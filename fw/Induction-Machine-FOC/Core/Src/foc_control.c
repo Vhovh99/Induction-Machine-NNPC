@@ -3,6 +3,7 @@
 #include "foc_math.h"
 #include "stm32g474xx.h"
 #include "stm32g4xx_hal.h"
+#include "stm32g4xx_hal_gpio.h"
 #include "stm32g4xx_hal_tim.h"
 #include "stm32g4xx_hal_uart.h"
 #include "svpwm.h"
@@ -10,11 +11,13 @@
 #include "stdio.h"
 #include "encoder.h"
 
-
+extern ADC_HandleTypeDef hadc2;
 extern TIM_HandleTypeDef htim1;
 extern UART_HandleTypeDef hlpuart1;
 
 extern Encoder_Handle_t encoder;
+
+float theta_test = 0.0f; // remove later, just for testing open loop control
 
 void PWM_WriteCompareShadow(float cmp_a, float cmp_b, float cmp_c, float cmp_trigger)
 {
@@ -29,7 +32,7 @@ void Motor_Init(const Motor_Parameters_t *params, Motor_Control_t *ctrl)
     ctrl->state = MOTOR_STATE_IDLE;
     ctrl->theta_sl = 0.0f;
     ctrl->omega_sl = 0.0f;
-    ctrl->theta_e = 0.0f;
+    //ctrl->theta_e = 0.0f;
 
     ctrl->psi_r = 0.0f;
 
@@ -39,17 +42,20 @@ void Motor_Init(const Motor_Parameters_t *params, Motor_Control_t *ctrl)
     ctrl->flux_build_time = 0.0f;
 
     // Initialize PI controllers
-    ctrl->id_controller.Kp = 0.1f;
-    ctrl->id_controller.Ki = 10.0f;
-    ctrl->id_controller.integral = 0.0f;
-    ctrl->id_controller.out_min = -params->id_max;
-    ctrl->id_controller.out_max = params->id_max;
+    // Limits should be in VOLTS, not Amps!
+    float max_voltage = 300.0f; // Limit to 300V output 
 
-    ctrl->iq_controller.Kp = 0.1f;
-    ctrl->iq_controller.Ki = 10.0f;
+    ctrl->id_controller.Kp = 1.5f; // Increased Kp for 55 ohm stator
+    ctrl->id_controller.Ki = 200.0f; // Increased Ki for 55 ohm stator
+    ctrl->id_controller.integral = 0.0f;
+    ctrl->id_controller.out_min = -max_voltage;
+    ctrl->id_controller.out_max = max_voltage;
+
+    ctrl->iq_controller.Kp = 1.5f;
+    ctrl->iq_controller.Ki = 200.0f;
     ctrl->iq_controller.integral = 0.0f;
-    ctrl->iq_controller.out_min = -params->iq_max;
-    ctrl->iq_controller.out_max = params->iq_max;
+    ctrl->iq_controller.out_min = -max_voltage;
+    ctrl->iq_controller.out_max = max_voltage;
     
 }
 
@@ -81,10 +87,10 @@ void open_loop_voltage_control(float Vd_ref, float Vq_ref, float angle_rad) {
     svpwm_output = SVPWM_Calculate(valpha_beta.alpha, valpha_beta.beta, 311);
 
     PWM_WriteCompareShadow(svpwm_output.duty_a, svpwm_output.duty_b, svpwm_output.duty_c, svpwm_output.trigger_point);
-    char buffer[64];
-    int len = snprintf(buffer, sizeof(buffer), "%.0f,%.0f,%.0f,%.0f\r\n", 
-                       svpwm_output.duty_a * PWM_PERIOD_TICKS, svpwm_output.duty_b * PWM_PERIOD_TICKS, svpwm_output.duty_c * PWM_PERIOD_TICKS, svpwm_output.trigger_point * PWM_PERIOD_TICKS);
-    HAL_UART_Transmit(&hlpuart1, (uint8_t *)buffer, len, HAL_MAX_DELAY);
+    // char buffer[64];
+    // int len = snprintf(buffer, sizeof(buffer), "%.0f,%.0f,%.0f,%.0f\r\n", 
+    //                    svpwm_output.duty_a * PWM_PERIOD_TICKS, svpwm_output.duty_b * PWM_PERIOD_TICKS, svpwm_output.duty_c * PWM_PERIOD_TICKS, svpwm_output.trigger_point * PWM_PERIOD_TICKS);
+    // HAL_UART_Transmit(&hlpuart1, (uint8_t *)buffer, len, HAL_MAX_DELAY);
 }
 
 void svpwm_test(void) {
@@ -101,10 +107,10 @@ void svpwm_test(void) {
 
     float v_bus = 311.0f;          // Your DC Bus Voltage (e.g. 24V for testing)
     float max_freq = 5.0f;        // Target frequency in Hz (keep it low for open loop!)
-    float voltage_amplitude = 22.0f; // Start with small voltage  
+    float voltage_amplitude = 40.0f; // Start with small voltage  
 
-    open_loop_voltage_control(voltage_amplitude, 0.0f, 0.0f);
-    HAL_Delay(1000); 
+    // open_loop_voltage_control(voltage_amplitude, 0.0f, 0.0f);
+    // HAL_Delay(1000); 
 
     float theta = 0.0f;
     float dt = 0.001f; // 1ms delay = 1kHz loop approximation
@@ -112,6 +118,7 @@ void svpwm_test(void) {
 
     // Rotate for 5 seconds
     for (int i= 0; i < 5000; i++) {
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
         theta += d_theta;
         if(theta > 6.2831f) theta -= 6.2831f;
         
@@ -120,11 +127,17 @@ void svpwm_test(void) {
         // effectively Vd=3V, Vq=0V in a frame that is ROTATING at 5Hz.
         open_loop_voltage_control(voltage_amplitude, 0.0f, theta);
         Encoder_Update(&encoder, dt);
-        // float temp = Encoder_GetMechanicalAngleRad(&encoder); 
+        theta_test = Encoder_GetMechanicalAngleRad(&encoder); 
         // char buf [64];
         // int len =  sprintf(buf, "%.2f\r\n", RAD_TO_DEG(temp));
         // HAL_UART_Transmit(&hlpuart1, (uint8_t*)buf, len, 1);
         // HAL_Delay(1); // Wait 1ms
+        
+        if (!(HAL_ADC_GetState(&hadc2) & HAL_ADC_STATE_REG_BUSY))
+        {
+            HAL_ADC_Start_IT(&hadc2);
+        }
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
     }
 
     // 4. Stop
@@ -165,7 +178,6 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
 
     ctrl->theta_m = theta_m;
     ctrl->theta_e = WrapAngle0To2Pi(ctrl->theta_m * (float)params->pole_pairs + ctrl->theta_sl);
-
     clarke = Clarke_Transform(ia, ib);
 
     float sin_theta, cos_theta;

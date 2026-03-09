@@ -22,7 +22,11 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "foc_control.h"
+#include "stm32g474xx.h"
 #include "stm32g4xx_hal.h"
+#include "stm32g4xx_hal_adc.h"
+#include "stm32g4xx_hal_adc_ex.h"
+#include "stm32g4xx_hal_gpio.h"
 #include "stm32g4xx_hal_uart.h"
 #include "svpwm.h"
 #include "encoder.h"
@@ -67,12 +71,12 @@ TIM_HandleTypeDef htim2;
 
 /* USER CODE BEGIN PV */
 const Motor_Parameters_t motor_params = {
-    .Rs = 0.039f,         // Stator resistance (Ohms)
-    .Rr = 0.031f,         // Rotor resistance (Ohms)
-    .Lm = 0.15f,          // Magnetizing inductance (H)
-    .Lr = 0.17f,          // Rotor inductance (H)
+    .Rs = 52.43f,         // Stator resistance (Ohms)
+    .Rr = 45.4465f,       // Rotor resistance (Ohms)
+    .Lm = 1.5133f,        // Magnetizing inductance (H)
+    .Lr = 1.6357f,        // Rotor inductance (H)
     .pole_pairs = 2,      // Number of pole pairs
-    .Tr = 0.17f / 0.031f, // Rotor time constant (s)
+    .Tr = 1.6357f / 45.4465f, // Rotor time constant (s) Lr/Rr
     .id_ref = 0.0f,       // Initial d-axis current reference (A)
     .iq_ref = 0.0f,       // Initial q-axis current reference (A)
     .id_max = 2.0f,       // Maximum d-axis current (A)
@@ -81,6 +85,8 @@ const Motor_Parameters_t motor_params = {
 };
 
 Motor_Control_t motor_control = {0};
+
+uint8_t run_foc_loop = 1; // Set to 0 to disable FOC during testing
 
 /* Temperature Variable */
 float temperature_VTSO = 0.0f;
@@ -151,8 +157,13 @@ void PWM_START(void)
 
 void PWM_STOP(void)
 {
-    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_ALL);
-    HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_ALL);
+    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
+    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_2);
+    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_3);
+    
+    HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_1);  // CH1N
+    HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_2);  // CH2N
+    HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_3);  // CH3N
 }
 
 
@@ -178,8 +189,8 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 }
 
 float ADC_Measure_VTSO(void) {
-    HAL_ADC_Start(&hadc2);
-    if (HAL_ADC_PollForConversion(&hadc2, 200) == HAL_OK) {
+    //HAL_ADC_Start(&hadc2);
+    //if (HAL_ADC_PollForConversion(&hadc2, 200) == HAL_OK) {
         uint16_t adc_value = HAL_ADC_GetValue(&hadc2);
         // Calculate Voltage: V = (ADC / 4095) * 3.3V
         uint16_t voltage_mv = (adc_value * 3300) / 4095;
@@ -187,11 +198,42 @@ float ADC_Measure_VTSO(void) {
         // Calculate Temperature from Graph (Typ line):
         // y = kx + b; where k = 18.666666667f, b = 700 (mV at 0°C)
         temperature_VTSO = (voltage_mv - 700) / 18.666666667f; // in °C
-    }
-    HAL_ADC_Stop(&hadc2);
+    //}
+    //HAL_ADC_Stop(&hadc2);
+    
     return temperature_VTSO;
 }
 
+void lock_test_current_sign_verification(void) {
+    // Stop the FOC loop so it doesn't overwrite our voltage command
+    run_foc_loop = 0; 
+    
+    // Enable ADC IT so `currents` struct is continuously updated by the callback
+    HAL_ADCEx_InjectedStart_IT(&hadc1);
+    
+    // Safety check: Don't apply high voltage. 
+    // Just 2 volts or a small fraction of your bus voltage
+    float test_voltage = 55.0f; 
+    
+    // Print values for 5 seconds
+    for (int i = 0; i < 50; i++) {
+        // Apply fixed voltage at 0 degrees. 
+        // This causes current to flow INTO Phase A (+), and OUT of Phase B (-) and C (-)
+        open_loop_voltage_control(test_voltage, 0.0f, 0.0f);
+
+        char buf[128];
+        int len = snprintf(buf, sizeof(buf), "%.1f,%.3f,%.3f,%.3f\r\n", // voltage, Ia, Ib, Ic
+                           test_voltage, currents.Ia, currents.Ib, currents.Ic);
+        HAL_UART_Transmit(&hlpuart1, (uint8_t*)buf, len, HAL_MAX_DELAY);
+        
+        HAL_Delay(100);
+    }
+    
+    // Stop generating voltage
+    open_loop_voltage_control(0.0f, 0.0f, 0.0f);
+    HAL_ADCEx_InjectedStop_IT(&hadc1);
+    run_foc_loop = 0; // Re-enable FOC logic for normal operation later
+}
 
 /* USER CODE END 0 */
 
@@ -245,13 +287,16 @@ int main(void)
   CurrentSense_Calibrate();
 
   HAL_ADCEx_InjectedStop(&hadc1);
-  // HAL_ADCEx_InjectedStart_IT(&hadc1);
-
+  HAL_ADCEx_InjectedStart_IT(&hadc1);
+  // HAL_ADC_Start_IT(&hadc2);
   Encoder_Start(&encoder);
 
   Motor_Init(&motor_params, &motor_control);
 
   PWM_START();
+
+  // svpwm_test();
+  // PWM_STOP();
 
   /* USER CODE END 2 */
 
@@ -263,17 +308,15 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-    if (ADC_Measure_VTSO() > 100.0f) {
-        PWM_STOP();
-    }
-
-    svpwm_test();
+    // if (ADC_Measure_VTSO() > 100.0f) {
+    //     PWM_STOP();
+    // }
 
     // float temp = Encoder_GetMechanicalAngleRad(&encoder); 
     // temp = RAD_TO_DEG(temp);
-    // char buf [64];
-    // sprintf(buf, "%.2f\r\n", temp);
-    // HAL_UART_Transmit(&hlpuart1, (uint8_t*)buf, strlen(buf), HAL_MAX_DELAY);
+    char buf [64];
+    sprintf(buf, "%.2f,%.2f\r\n", motor_control.i_dq.d, motor_control.i_dq.q);
+    HAL_UART_Transmit(&hlpuart1, (uint8_t*)buf, strlen(buf), HAL_MAX_DELAY);
     // HAL_Delay(10);
 
   }
@@ -459,7 +502,7 @@ static void MX_ADC2_Init(void)
   hadc2.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc2.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc2.Init.DMAContinuousRequests = DISABLE;
-  hadc2.Init.Overrun = ADC_OVR_DATA_PRESERVED;
+  hadc2.Init.Overrun = ADC_OVR_DATA_OVERWRITTEN;
   hadc2.Init.OversamplingMode = DISABLE;
   if (HAL_ADC_Init(&hadc2) != HAL_OK)
   {
@@ -470,7 +513,7 @@ static void MX_ADC2_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_8;
   sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_47CYCLES_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_640CYCLES_5;
   sConfig.SingleDiff = ADC_SINGLE_ENDED;
   sConfig.OffsetNumber = ADC_OFFSET_NONE;
   sConfig.Offset = 0;
@@ -670,7 +713,7 @@ static void MX_TIM1_Init(void)
   }
   sBreakInputConfig.Source = TIM_BREAKINPUTSOURCE_BKIN;
   sBreakInputConfig.Enable = TIM_BREAKINPUTSOURCE_ENABLE;
-  sBreakInputConfig.Polarity = TIM_BREAKINPUTSOURCE_POLARITY_LOW;
+  sBreakInputConfig.Polarity = TIM_BREAKINPUTSOURCE_POLARITY_HIGH;
   if (HAL_TIMEx_ConfigBreakInput(&htim1, TIM_BREAKINPUT_BRK, &sBreakInputConfig) != HAL_OK)
   {
     Error_Handler();
@@ -705,8 +748,8 @@ static void MX_TIM1_Init(void)
   sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
   sBreakDeadTimeConfig.DeadTime = 200;
   sBreakDeadTimeConfig.BreakState = TIM_BREAK_ENABLE;
-  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
-  sBreakDeadTimeConfig.BreakFilter = 0;
+  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_LOW;
+  sBreakDeadTimeConfig.BreakFilter = 10;
   sBreakDeadTimeConfig.BreakAFMode = TIM_BREAK_AFMODE_INPUT;
   sBreakDeadTimeConfig.Break2State = TIM_BREAK2_DISABLE;
   sBreakDeadTimeConfig.Break2Polarity = TIM_BREAK2POLARITY_HIGH;
@@ -880,18 +923,21 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
 
     currents = CurrentSense_ReadWithShuntSelection(last_svpwm.shunt1, last_svpwm.shunt2);
-
+    // currents = CurrentSense_Read();
     Encoder_Update(&encoder,1/20000.0f); // 20 kHz sampling rate
     float theta_m = Encoder_GetMechanicalAngleRad(&encoder);
+    
+    if (run_foc_loop) {
+        SVPWM_Output_t new_svpwm = {0};
+        FOC_Control_Loop(&motor_control, &motor_params, 
+                          currents.Ia, currents.Ib, 
+                          0.4f, 0.0f, 
+                          theta_m, currents.Vbus, &new_svpwm);
 
-    SVPWM_Output_t new_svpwm = {0};
-    FOC_Control_Loop(&motor_control, &motor_params, 
-                      currents.Ia, currents.Ib, 
-                      0.0f, 0.0f, 
-                      theta_m, currents.Vbus, &new_svpwm);
-    PWM_WriteCompareShadow(new_svpwm.duty_a, new_svpwm.duty_b, new_svpwm.duty_c, new_svpwm.trigger_point);
-    // Store for next cycle
-    last_svpwm = new_svpwm;
+        PWM_WriteCompareShadow(new_svpwm.duty_a, new_svpwm.duty_b, new_svpwm.duty_c, new_svpwm.trigger_point);
+        // Store for next cycle
+        last_svpwm = new_svpwm;
+    }
     
     // char buf[64];
     // sprintf(buf, "%.0f,%.0f,%.0f,%.0f\r\n", new_svpwm.duty_a * PWM_PERIOD_TICKS, new_svpwm.duty_b * PWM_PERIOD_TICKS, new_svpwm.duty_c * PWM_PERIOD_TICKS, theta_m);
@@ -899,9 +945,19 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
 
     // Set PC9 low
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+    HAL_ADC_Start_IT(&hadc2); // VTSO temperature measurement after FOC loop to avoid timing jitter
 
 }
 
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {
+    if (hadc->Instance != ADC2) {
+        return;
+    }
+    // Read VTSO temperature
+    if (ADC_Measure_VTSO() > 100.0f) {
+        PWM_STOP();
+    }
+}
 /* USER CODE END 4 */
 
 /**
