@@ -171,7 +171,7 @@ SVPWM_Output_t SVPWM_Calculate(float v_alpha, float v_beta, float v_bus)
                                                             output.shunt1, output.shunt2);
     } else {
         // Default to center if no valid shunts (shouldn't happen in normal operation)
-        output.trigger_point = 0.5f;
+        output.trigger_point = 0.995f;
     }
     if (output.trigger_point > 0.95f) output.trigger_point = 0.95f;
     if (output.trigger_point < 0.05f) output.trigger_point = 0.05f;
@@ -342,8 +342,8 @@ float SVPWM_CalculateTriggerPoint(SVPWM_Sector_t sector, float duty_a, float dut
     if (trigger_point < 0.1f) {
         trigger_point = 0.1f;  // Minimum 10% into period
     }
-    if (trigger_point > 0.9f) {
-        trigger_point = 0.9f;  // Maximum 90% into period
+    if (trigger_point > 0.995f) {
+        trigger_point = 0.995f;  // Maximum 99.5% into period
     }
     
     return trigger_point;

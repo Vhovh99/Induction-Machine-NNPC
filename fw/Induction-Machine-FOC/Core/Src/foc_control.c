@@ -43,16 +43,16 @@ void Motor_Init(const Motor_Parameters_t *params, Motor_Control_t *ctrl)
 
     // Initialize PI controllers
     // Limits should be in VOLTS, not Amps!
-    float max_voltage = 300.0f; // Limit to 300V output 
+    float max_voltage = 50.0f; // Limit raised for back-EMF overhead 
 
-    ctrl->id_controller.Kp = 1.5f; // Increased Kp for 55 ohm stator
-    ctrl->id_controller.Ki = 200.0f; // Increased Ki for 55 ohm stator
+    ctrl->id_controller.Kp = 0.5f; // Increased Kp for 55 ohm stator
+    ctrl->id_controller.Ki = 50.0f; // Increased Ki for 55 ohm stator
     ctrl->id_controller.integral = 0.0f;
     ctrl->id_controller.out_min = -max_voltage;
     ctrl->id_controller.out_max = max_voltage;
 
-    ctrl->iq_controller.Kp = 1.5f;
-    ctrl->iq_controller.Ki = 200.0f;
+    ctrl->iq_controller.Kp = 0.5f;
+    ctrl->iq_controller.Ki = 50.0f;
     ctrl->iq_controller.integral = 0.0f;
     ctrl->iq_controller.out_min = -max_voltage;
     ctrl->iq_controller.out_max = max_voltage;

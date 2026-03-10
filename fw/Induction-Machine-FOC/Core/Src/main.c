@@ -81,7 +81,7 @@ const Motor_Parameters_t motor_params = {
     .iq_ref = 0.0f,       // Initial q-axis current reference (A)
     .id_max = 2.0f,       // Maximum d-axis current (A)
     .iq_max = 2.0f,       // Maximum q-axis current (A)
-    .Ts = 1 / 2000.0f     // Control loop period (s)
+    .Ts = 1.0f / 20000.0f     // Control loop period (s)
 };
 
 Motor_Control_t motor_control = {0};
@@ -213,7 +213,7 @@ void lock_test_current_sign_verification(void) {
     
     // Safety check: Don't apply high voltage. 
     // Just 2 volts or a small fraction of your bus voltage
-    float test_voltage = 55.0f; 
+    float test_voltage = 20.0f; 
     
     // Print values for 5 seconds
     for (int i = 0; i < 50; i++) {
@@ -299,6 +299,7 @@ int main(void)
   // PWM_STOP();
 
   /* USER CODE END 2 */
+
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -737,7 +738,6 @@ static void MX_TIM1_Init(void)
   {
     Error_Handler();
   }
-  sConfigOC.OCMode = TIM_OCMODE_PWM2;
   sConfigOC.Pulse = 4248;
   if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
   {
@@ -922,8 +922,8 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
     // Set PC9 high
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
 
-    currents = CurrentSense_ReadWithShuntSelection(last_svpwm.shunt1, last_svpwm.shunt2);
-    // currents = CurrentSense_Read();
+    // currents = CurrentSense_ReadWithShuntSelection(last_svpwm.shunt1, last_svpwm.shunt2);
+    currents = CurrentSense_Read();
     Encoder_Update(&encoder,1/20000.0f); // 20 kHz sampling rate
     float theta_m = Encoder_GetMechanicalAngleRad(&encoder);
     
@@ -931,7 +931,7 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
         SVPWM_Output_t new_svpwm = {0};
         FOC_Control_Loop(&motor_control, &motor_params, 
                           currents.Ia, currents.Ib, 
-                          0.4f, 0.0f, 
+                          0.4f, 0.3f, 
                           theta_m, currents.Vbus, &new_svpwm);
 
         PWM_WriteCompareShadow(new_svpwm.duty_a, new_svpwm.duty_b, new_svpwm.duty_c, new_svpwm.trigger_point);
@@ -945,7 +945,10 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
 
     // Set PC9 low
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
-    HAL_ADC_Start_IT(&hadc2); // VTSO temperature measurement after FOC loop to avoid timing jitter
+    if (!(HAL_ADC_GetState(&hadc2) & HAL_ADC_STATE_REG_BUSY))
+    {
+        HAL_ADC_Start_IT(&hadc2);
+    }
 
 }
 
