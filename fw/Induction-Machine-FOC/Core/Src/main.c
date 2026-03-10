@@ -922,8 +922,8 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
     // Set PC9 high
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
 
-    // currents = CurrentSense_ReadWithShuntSelection(last_svpwm.shunt1, last_svpwm.shunt2);
-    currents = CurrentSense_Read();
+    currents = CurrentSense_ReadWithShuntSelection(last_svpwm.shunt1, last_svpwm.shunt2);
+    // currents = CurrentSense_Read();
     Encoder_Update(&encoder,1/20000.0f); // 20 kHz sampling rate
     float theta_m = Encoder_GetMechanicalAngleRad(&encoder);
     

@@ -43,7 +43,7 @@ void Motor_Init(const Motor_Parameters_t *params, Motor_Control_t *ctrl)
 
     // Initialize PI controllers
     // Limits should be in VOLTS, not Amps!
-    float max_voltage = 50.0f; // Limit raised for back-EMF overhead 
+    float max_voltage = 50.0f; 
 
     ctrl->id_controller.Kp = 0.5f; // Increased Kp for 55 ohm stator
     ctrl->id_controller.Ki = 50.0f; // Increased Ki for 55 ohm stator

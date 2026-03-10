@@ -173,7 +173,7 @@ SVPWM_Output_t SVPWM_Calculate(float v_alpha, float v_beta, float v_bus)
         // Default to center if no valid shunts (shouldn't happen in normal operation)
         output.trigger_point = 0.995f;
     }
-    if (output.trigger_point > 0.95f) output.trigger_point = 0.95f;
+    if (output.trigger_point > 0.995f) output.trigger_point = 0.995f;
     if (output.trigger_point < 0.05f) output.trigger_point = 0.05f;
 
     return output;
@@ -212,16 +212,7 @@ uint8_t SVPWM_SelectShunts(SVPWM_Sector_t sector, float duty_a, float duty_b, fl
     
     switch (sector) {
         case SVPWM_SECTOR_1:
-            // Phases A and B have longest low-side ON
-            if (duty_a < min_duty_for_valid && duty_b < min_duty_for_valid) {
-                *shunt1 = PHASE_A;
-                *shunt2 = PHASE_B;
-                return 1;
-            }
-            break;
-            
-        case SVPWM_SECTOR_2:
-            // Phases B and C have longest low-side ON
+            // Max: A, Mid: B, Min: C -> Lowest are B and C
             if (duty_b < min_duty_for_valid && duty_c < min_duty_for_valid) {
                 *shunt1 = PHASE_B;
                 *shunt2 = PHASE_C;
@@ -229,17 +220,26 @@ uint8_t SVPWM_SelectShunts(SVPWM_Sector_t sector, float duty_a, float duty_b, fl
             }
             break;
             
+        case SVPWM_SECTOR_2:
+            // Max: B, Mid: A, Min: C -> Lowest are A and C
+            if (duty_a < min_duty_for_valid && duty_c < min_duty_for_valid) {
+                *shunt1 = PHASE_A;
+                *shunt2 = PHASE_C;
+                return 1;
+            }
+            break;
+            
         case SVPWM_SECTOR_3:
-            // Phases C and A have longest low-side ON
-            if (duty_c < min_duty_for_valid && duty_a < min_duty_for_valid) {
-                *shunt1 = PHASE_C;
-                *shunt2 = PHASE_A;
+            // Max: B, Mid: C, Min: A -> Lowest are A and C
+            if (duty_a < min_duty_for_valid && duty_c < min_duty_for_valid) {
+                *shunt1 = PHASE_A;
+                *shunt2 = PHASE_C;
                 return 1;
             }
             break;
             
         case SVPWM_SECTOR_4:
-            // Phases A and B have longest low-side ON (reversed from Sector 1)
+            // Max: C, Mid: B, Min: A -> Lowest are A and B
             if (duty_a < min_duty_for_valid && duty_b < min_duty_for_valid) {
                 *shunt1 = PHASE_A;
                 *shunt2 = PHASE_B;
@@ -248,19 +248,19 @@ uint8_t SVPWM_SelectShunts(SVPWM_Sector_t sector, float duty_a, float duty_b, fl
             break;
             
         case SVPWM_SECTOR_5:
-            // Phases B and C have longest low-side ON (reversed from Sector 2)
-            if (duty_b < min_duty_for_valid && duty_c < min_duty_for_valid) {
-                *shunt1 = PHASE_B;
-                *shunt2 = PHASE_C;
+            // Max: C, Mid: A, Min: B -> Lowest are A and B
+            if (duty_a < min_duty_for_valid && duty_b < min_duty_for_valid) {
+                *shunt1 = PHASE_A;
+                *shunt2 = PHASE_B;
                 return 1;
             }
             break;
             
         case SVPWM_SECTOR_6:
-            // Phases C and A have longest low-side ON (reversed from Sector 3)
-            if (duty_c < min_duty_for_valid && duty_a < min_duty_for_valid) {
-                *shunt1 = PHASE_C;
-                *shunt2 = PHASE_A;
+            // Max: A, Mid: C, Min: B -> Lowest are B and C
+            if (duty_b < min_duty_for_valid && duty_c < min_duty_for_valid) {
+                *shunt1 = PHASE_B;
+                *shunt2 = PHASE_C;
                 return 1;
             }
             break;
@@ -310,7 +310,7 @@ float SVPWM_CalculateTriggerPoint(SVPWM_Sector_t sector, float duty_a, float dut
      * The optimal sampling point is at the valley (timer = 0 or PERIOD) where both 
      * selected low-side MOSFETs are guaranteed to be ON.
      * 
-     * For STM32 HRTIM center-aligned mode:
+     * For STM32:
      * - The valley (minimum) of the up-down count is the best sampling point
      * - This corresponds to the middle of the PWM period (50%)
      */
@@ -333,8 +333,9 @@ float SVPWM_CalculateTriggerPoint(SVPWM_Sector_t sector, float duty_a, float dut
     
     // For typical HRTIM, sampling at the valley (center) is most reliable
     // We can add a small offset if needed for ADC settling time
+    // float trigger_point = 0.99f;
     float trigger_point = 0.5f - config.trigger_offset;
-    
+
     // Ensure trigger point is within the valid measurement window
     // The window for low-side ON at valley is from 0 to (1 - duty)
     // In center-aligned mode, this translates to trigger before the duty edge
