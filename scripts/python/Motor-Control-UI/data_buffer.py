@@ -1,219 +1,113 @@
 import numpy as np
 from collections import deque
-from typing import Optional, Tuple
-from config import BUFFER_SIZE, MOTOR_POLE_PAIRS, MOTOR_MOMENT_OF_INERTIA, FRICTION_COEFFICIENT
+from typing import Optional
+from config import BUFFER_SIZE
 import time
 
 
 class TelemetryBuffer:
-    """Maintains circular buffers for telemetry data and calculates derived values."""
-    
+    """Maintains circular buffers for telemetry data matching firmware telemetry packet."""
+
     def __init__(self, buffer_size: int = BUFFER_SIZE):
         self.buffer_size = buffer_size
-        
-        # Circular buffers for telemetry
+
+        # Circular buffers matching firmware Telemetry_Packet_t fields
         self.timestamps = deque(maxlen=buffer_size)
-        self.speeds = deque(maxlen=buffer_size)
-        self.speeds_reference = deque(maxlen=buffer_size)
-        self.currents_ia = deque(maxlen=buffer_size)
-        self.currents_ib = deque(maxlen=buffer_size)
-        self.currents_alpha = deque(maxlen=buffer_size)
-        self.currents_beta = deque(maxlen=buffer_size)
-        self.currents_id = deque(maxlen=buffer_size)
-        self.currents_iq = deque(maxlen=buffer_size)
-        self.thetas_mechanical = deque(maxlen=buffer_size)
-        self.thetas_electrical = deque(maxlen=buffer_size)
-        self.torques_applied = deque(maxlen=buffer_size)
-        self.torques_electromagnetic = deque(maxlen=buffer_size)
-        
-        # Current control values
-        self.reference_frequency = 50.0  # Hz
-        self.reference_amplitude = 0.5
-        self.reference_rpm = 1500
-        
-        # Last values for derivative calculation
-        self.last_speed = 0.0
-        self.last_timestamp = time.time()
-    
-    def add_telemetry(
-        self,
-        speed: float,
-        ia: float,
-        ib: float,
-        i_alpha: Optional[float] = None,
-        i_beta: Optional[float] = None,
-        id_current: Optional[float] = None,
-        iq_current: Optional[float] = None,
-        theta_mechanical: Optional[float] = None,
-        theta_electrical: Optional[float] = None,
-    ):
-        """Add a new telemetry sample."""
+        self.id_currents = deque(maxlen=buffer_size)       # d-axis current (A)
+        self.iq_currents = deque(maxlen=buffer_size)       # q-axis current (A)
+        self.vbus_values = deque(maxlen=buffer_size)       # DC bus voltage (V)
+        self.omega_m_values = deque(maxlen=buffer_size)    # mechanical speed (rad/s)
+        self.currents_ia = deque(maxlen=buffer_size)       # phase A current (A)
+        self.currents_ib = deque(maxlen=buffer_size)       # phase B current (A)
+        self.currents_ic = deque(maxlen=buffer_size)       # phase C current (A)
+        self.theta_e_values = deque(maxlen=buffer_size)     # electrical angle (rad)
+        self.theta_e_integ_values = deque(maxlen=buffer_size)  # integrated electrical angle (rad)
+
+        # Speed reference for overlay on plot
+        self.speed_references = deque(maxlen=buffer_size)
+        self.reference_speed = 0.0  # rad/s
+
+    def add_telemetry(self, id_val: float, iq_val: float, vbus: float,
+                      omega_m: float, ia: float, ib: float, ic: float,
+                      theta_e: float = 0.0, theta_e_integ: float = 0.0):
         current_time = time.time()
-        dt = current_time - self.last_timestamp
-        
         self.timestamps.append(current_time)
-        self.speeds.append(speed)
-        
-        # Use the reference RPM directly if set, otherwise calculate from frequency
-        if self.reference_rpm > 0:
-            reference_speed = self.reference_rpm
-        else:
-            # Fallback: Calculate reference speed from frequency
-            # Assuming synchronous speed = 120 * f / P, where P is pole pairs
-            reference_speed = (120 * self.reference_frequency) / MOTOR_POLE_PAIRS
-        self.speeds_reference.append(reference_speed)
-        
-        # Store currents
+        self.id_currents.append(id_val)
+        self.iq_currents.append(iq_val)
+        self.vbus_values.append(vbus)
+        self.omega_m_values.append(omega_m)
         self.currents_ia.append(ia)
         self.currents_ib.append(ib)
-        self.currents_alpha.append(np.nan if i_alpha is None else i_alpha)
-        self.currents_beta.append(np.nan if i_beta is None else i_beta)
-        self.currents_id.append(np.nan if id_current is None else id_current)
-        self.currents_iq.append(np.nan if iq_current is None else iq_current)
-        self.thetas_mechanical.append(np.nan if theta_mechanical is None else theta_mechanical)
-        self.thetas_electrical.append(np.nan if theta_electrical is None else theta_electrical)
-        
-        # Calculate torques
-        applied_torque = self._calculate_applied_torque(ia, ib)
-        electromagnetic_torque = self._calculate_electromagnetic_torque(speed, applied_torque, dt)
-        
-        self.torques_applied.append(applied_torque)
-        self.torques_electromagnetic.append(electromagnetic_torque)
-        
-        self.last_speed = speed
-        self.last_timestamp = current_time
-    
-    def set_reference_values(self, frequency: float = None, amplitude: float = None, rpm: float = None):
-        """Set reference values for control."""
-        if frequency is not None:
-            self.reference_frequency = frequency
-        if amplitude is not None:
-            self.reference_amplitude = amplitude
-        if rpm is not None:
-            self.reference_rpm = rpm
-    
-    def _calculate_applied_torque(self, ia: float, ib: float) -> float:
-        """
-        Calculate the applied torque from phase currents.
-        Simplified model: T = K * sqrt(Ia^2 + Ib^2)
-        where K is a motor constant to be calibrated.
-        """
-        # Motor constant (should be calibrated based on motor spec)
-        K_motor = 2.5  # N*m/A (example value)
-        
-        current_magnitude = np.sqrt(ia**2 + ib**2)
-        return K_motor * current_magnitude
-    
-    def _calculate_electromagnetic_torque(self, current_speed: float, applied_torque: float, dt: float) -> float:
-        """
-        Estimate electromagnetic torque using the dynamic equation:
-        T_em - T_friction = J * dω/dt
-        where J is moment of inertia, ω is angular velocity.
-        """
-        if dt <= 0:
-            return applied_torque
-        
-        # Convert RPM to rad/s for calculations
-        omega_current = current_speed * 2 * np.pi / 60
-        omega_last = self.last_speed * 2 * np.pi / 60
-        
-        # Angular acceleration
-        dw_dt = (omega_current - omega_last) / dt if dt > 0 else 0
-        
-        # Friction torque (proportional to speed)
-        T_friction = FRICTION_COEFFICIENT * current_speed / 60
-        
-        # From: T_em = J * dω/dt + T_friction
-        T_em = MOTOR_MOMENT_OF_INERTIA * dw_dt + T_friction
-        
-        return T_em
-    
+        self.currents_ic.append(ic)
+        self.theta_e_values.append(theta_e)
+        self.theta_e_integ_values.append(theta_e_integ)
+        self.speed_references.append(self.reference_speed)
+
+    def set_speed_reference(self, omega_ref: float):
+        self.reference_speed = omega_ref
+
     def get_plot_data(self) -> dict:
-        """Get data suitable for plotting."""
-        # Convert deques to arrays for easier manipulation
         if len(self.timestamps) == 0:
+            empty = np.array([])
             return {
-                'time': np.array([]),
-                'speed_actual': np.array([]),
-                'speed_reference': np.array([]),
-                'torque_applied': np.array([]),
-                'torque_electromagnetic': np.array([]),
-                'current_ia': np.array([]),
-                'current_ib': np.array([]),
-                'current_alpha': np.array([]),
-                'current_beta': np.array([]),
-                'current_id': np.array([]),
-                'current_iq': np.array([]),
-                'theta_mechanical': np.array([]),
-                'theta_electrical': np.array([]),
+                'time': empty,
+                'omega_m': empty,
+                'speed_reference': empty,
+                'id': empty,
+                'iq': empty,
+                'vbus': empty,
+                'ia': empty,
+                'ib': empty,
+                'ic': empty,
+                'theta_e': empty,
+                'theta_e_integ': empty,
             }
-        
-        # Create time array relative to start (for better x-axis readability)
+
         time_array = np.array(list(self.timestamps))
-        if len(time_array) > 0:
-            time_relative = time_array - time_array[0]
-        else:
-            time_relative = np.array([])
-        
+        time_relative = time_array - time_array[0]
+
         return {
             'time': time_relative,
-            'speed_actual': np.array(list(self.speeds)),
-            'speed_reference': np.array(list(self.speeds_reference)),
-            'torque_applied': np.array(list(self.torques_applied)),
-            'torque_electromagnetic': np.array(list(self.torques_electromagnetic)),
-            'current_ia': np.array(list(self.currents_ia)),
-            'current_ib': np.array(list(self.currents_ib)),
-            'current_alpha': np.array(list(self.currents_alpha)),
-            'current_beta': np.array(list(self.currents_beta)),
-            'current_id': np.array(list(self.currents_id)),
-            'current_iq': np.array(list(self.currents_iq)),
-            'theta_mechanical': np.array(list(self.thetas_mechanical)),
-            'theta_electrical': np.array(list(self.thetas_electrical)),
+            'omega_m': np.array(list(self.omega_m_values)),
+            'speed_reference': np.array(list(self.speed_references)),
+            'id': np.array(list(self.id_currents)),
+            'iq': np.array(list(self.iq_currents)),
+            'vbus': np.array(list(self.vbus_values)),
+            'ia': np.array(list(self.currents_ia)),
+            'ib': np.array(list(self.currents_ib)),
+            'ic': np.array(list(self.currents_ic)),
+            'theta_e': np.array(list(self.theta_e_values)),
+            'theta_e_integ': np.array(list(self.theta_e_integ_values)),
         }
-    
+
     def get_latest_values(self) -> dict:
-        """Get the latest measured values."""
-        if len(self.speeds) == 0:
+        if len(self.timestamps) == 0:
             return {
-                'speed': 0.0,
-                'ia': 0.0,
-                'ib': 0.0,
-                'torque_applied': 0.0,
-                'torque_electromagnetic': 0.0,
-                'i_alpha': 0.0,
-                'i_beta': 0.0,
-                'id': 0.0,
-                'iq': 0.0,
-                'theta_mechanical': 0.0,
-                'theta_electrical': 0.0,
+                'omega_m': 0.0, 'id': 0.0, 'iq': 0.0,
+                'vbus': 0.0, 'ia': 0.0, 'ib': 0.0, 'ic': 0.0,
+                'theta_e': 0.0, 'theta_e_integ': 0.0,
             }
-        
         return {
-            'speed': self.speeds[-1],
+            'omega_m': self.omega_m_values[-1],
+            'id': self.id_currents[-1],
+            'iq': self.iq_currents[-1],
+            'vbus': self.vbus_values[-1],
             'ia': self.currents_ia[-1],
             'ib': self.currents_ib[-1],
-            'torque_applied': self.torques_applied[-1],
-            'torque_electromagnetic': self.torques_electromagnetic[-1],
-            'i_alpha': self.currents_alpha[-1],
-            'i_beta': self.currents_beta[-1],
-            'id': self.currents_id[-1],
-            'iq': self.currents_iq[-1],
-            'theta_mechanical': self.thetas_mechanical[-1],
-            'theta_electrical': self.thetas_electrical[-1],
+            'ic': self.currents_ic[-1],
+            'theta_e': self.theta_e_values[-1],
+            'theta_e_integ': self.theta_e_integ_values[-1],
         }
-    
+
     def clear(self):
-        """Clear all buffers."""
         self.timestamps.clear()
-        self.speeds.clear()
-        self.speeds_reference.clear()
+        self.id_currents.clear()
+        self.iq_currents.clear()
+        self.vbus_values.clear()
+        self.omega_m_values.clear()
         self.currents_ia.clear()
         self.currents_ib.clear()
-        self.currents_alpha.clear()
-        self.currents_beta.clear()
-        self.currents_id.clear()
-        self.currents_iq.clear()
-        self.thetas_mechanical.clear()
-        self.thetas_electrical.clear()
-        self.torques_applied.clear()
-        self.torques_electromagnetic.clear()
+        self.currents_ic.clear()
+        self.theta_e_values.clear()
+        self.theta_e_integ_values.clear()
+        self.speed_references.clear()
