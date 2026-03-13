@@ -17,7 +17,7 @@ void SVPWM_Init(SVPWM_Config_t *cfg)
     
     // Ensure reasonable defaults
     if (config.min_duty_window < 0.05f) {
-        config.min_duty_window = 0.15f;  // 15% minimum duty for valid shunt
+        config.min_duty_window = 0.10f;  // 10% minimum duty for valid shunt
     }
     if (config.trigger_offset < 0.01f) {
         config.trigger_offset = 0.05f;   // 5% offset from duty edge
@@ -170,10 +170,10 @@ SVPWM_Output_t SVPWM_Calculate(float v_alpha, float v_beta, float v_bus)
                                                             output.duty_a, output.duty_b, output.duty_c,
                                                             output.shunt1, output.shunt2);
     } else {
-        // Default to center if no valid shunts (shouldn't happen in normal operation)
-        output.trigger_point = 0.995f;
+        // Fallback: trigger near peak where all low-sides are ON
+        output.trigger_point = 0.998f;
     }
-    if (output.trigger_point > 0.995f) output.trigger_point = 0.995f;
+    if (output.trigger_point > 0.998f) output.trigger_point = 0.998f;
     if (output.trigger_point < 0.05f) output.trigger_point = 0.05f;
 
     return output;
@@ -197,18 +197,18 @@ uint8_t SVPWM_SelectShunts(SVPWM_Sector_t sector, float duty_a, float duty_b, fl
      * 
      * Sector-based selection picks the two phases with lowest duties:
      */
-    
+
     float min_duty_for_valid = 1.0f - config.min_duty_window;
     
     // For each sector, select the two phases with the longest low-side ON time
     // This corresponds to the two phases with the LOWEST duty cycles
     
-    // Sector 1 (0° to 60°): Phases A and B have lowest duties
-    // Sector 2 (60° to 120°): Phases B and C have lowest duties
-    // Sector 3 (120° to 180°): Phases A and C have lowest duties (reversed order)
-    // Sector 4 (180° to 240°): Phases A and B have lowest duties (reversed order)
-    // Sector 5 (240° to 300°): Phases B and C have lowest duties (reversed order)
-    // Sector 6 (300° to 360°): Phases A and C have lowest duties
+    // Sector 1 (0° to 60°):   A max, B mid, C min -> Lowest are B and C
+    // Sector 2 (60° to 120°):  B max, A mid, C min -> Lowest are A and C
+    // Sector 3 (120° to 180°): B max, C mid, A min -> Lowest are A and C
+    // Sector 4 (180° to 240°): C max, B mid, A min -> Lowest are A and B
+    // Sector 5 (240° to 300°): C max, A mid, B min -> Lowest are A and B
+    // Sector 6 (300° to 360°): A max, C mid, B min -> Lowest are B and C
     
     switch (sector) {
         case SVPWM_SECTOR_1:
@@ -297,55 +297,28 @@ float SVPWM_CalculateTriggerPoint(SVPWM_Sector_t sector, float duty_a, float dut
                                    Phase_t shunt1, Phase_t shunt2)
 {
     /**
-     * For center-aligned PWM (up-down counting):
-     * - Timer counts UP from 0 to PERIOD, then DOWN from PERIOD to 0
-     * - PWM output is HIGH when timer < CMP (on up-count) and when timer > CMP (on down-count)
-     * - Low-side MOSFET is ON when PWM is LOW
-     * 
-     * For a duty cycle D:
-     * - CMP = D * PERIOD
-     * - Low-side ON windows: [0, CMP] during up-count and [CMP, PERIOD] during down-count
-     * - But with dead-time, effective windows are slightly shorter
-     * 
-     * The optimal sampling point is at the valley (timer = 0 or PERIOD) where both 
-     * selected low-side MOSFETs are guaranteed to be ON.
-     * 
-     * For STM32:
-     * - The valley (minimum) of the up-down count is the best sampling point
-     * - This corresponds to the middle of the PWM period (50%)
+     * In Center-Aligned Mode:
+     * - Timer counts UP from 0 to PERIOD, then DOWN from PERIOD to 0.
+     * - High-side is ON when CNT < CCR (duty * PERIOD).
+     * - Low-side  is ON when CNT > CCR.
+     *
+     * ADC trigger (TIM1_CH4 falling edge) fires when CNT = CCR4 during up-count.
+     * Both selected shunts' low-sides are conducting when CNT > max(CCR_sh1, CCR_sh2).
+     *
+     * So the trigger must be placed ABOVE the higher of the two shunt duties,
+     * plus a settling offset to let the current stabilize after switching.
+     *
+     * trigger_point = max(duty_sh1, duty_sh2) + trigger_offset
      */
-    
-    // Get duties of selected shunts
+
     float duty_sh1 = (shunt1 == PHASE_A) ? duty_a : ((shunt1 == PHASE_B) ? duty_b : duty_c);
     float duty_sh2 = (shunt2 == PHASE_A) ? duty_a : ((shunt2 == PHASE_B) ? duty_b : duty_c);
-    
-    // For center-aligned PWM, the valley (50% point) is ideal
-    // The low-side is ON from 0 to (duty * 50%) during valley
-    // We want to sample in the middle of the valid window with some offset for settling
-    
-    // Suppress unused variable warning (keeping for potential future use)
-    (void)duty_sh1;
-    (void)duty_sh2;
-    
-    // Calculate trigger point: at valley (0.5) minus a small offset
-    // The valley is where the timer transitions from down-count to up-count
-    // At this point, low-side MOSFETs with duty < 0.5 are ON
-    
-    // For typical HRTIM, sampling at the valley (center) is most reliable
-    // We can add a small offset if needed for ADC settling time
-    // float trigger_point = 0.99f;
-    float trigger_point = 0.5f - config.trigger_offset;
 
-    // Ensure trigger point is within the valid measurement window
-    // The window for low-side ON at valley is from 0 to (1 - duty)
-    // In center-aligned mode, this translates to trigger before the duty edge
-    
-    if (trigger_point < 0.1f) {
-        trigger_point = 0.1f;  // Minimum 10% into period
-    }
-    if (trigger_point > 0.995f) {
-        trigger_point = 0.995f;  // Maximum 99.5% into period
-    }
-    
+    float max_shunt_duty = (duty_sh1 > duty_sh2) ? duty_sh1 : duty_sh2;
+    float trigger_point = max_shunt_duty + config.trigger_offset;
+
+    if (trigger_point > 0.998f) trigger_point = 0.998f;
+    if (trigger_point < 0.05f)  trigger_point = 0.05f;
+
     return trigger_point;
 }

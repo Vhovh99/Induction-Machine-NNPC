@@ -1,6 +1,7 @@
 #include "foc_control.h"
 #include "sine_op.h"
 #include "foc_math.h"
+#include <math.h>
 #include "stm32g474xx.h"
 #include "stm32g4xx_hal.h"
 #include "stm32g4xx_hal_gpio.h"
@@ -32,27 +33,34 @@ void Motor_Init(const Motor_Parameters_t *params, Motor_Control_t *ctrl)
     ctrl->state = MOTOR_STATE_IDLE;
     ctrl->theta_sl = 0.0f;
     ctrl->omega_sl = 0.0f;
-    //ctrl->theta_e = 0.0f;
 
     ctrl->psi_r = 0.0f;
 
     ctrl->v_dq.d = 0.0f;
     ctrl->v_dq.q = 0.0f;
 
+    ctrl->i_dq_filt.d = 0.0f;
+    ctrl->i_dq_filt.q = 0.0f;
+
     ctrl->flux_build_time = 0.0f;
 
     // Initialize PI controllers
     // Limits should be in VOLTS, not Amps!
-    float max_voltage = 50.0f; 
+    float max_voltage = 220.0f; 
 
-    ctrl->id_controller.Kp = 0.5f; // Increased Kp for 55 ohm stator
-    ctrl->id_controller.Ki = 50.0f; // Increased Ki for 55 ohm stator
+    // PI tuned via pole-zero cancellation on stator transient model:
+    //   Kp = sigma_Ls * omega_bw,  Ki = Rs * omega_bw
+    float omega_bw = 30.0f;
+    float sigma_Ls = params->sigma_Ls;
+
+    ctrl->id_controller.Kp = sigma_Ls * omega_bw;  // 0.236*10 = 2.36
+    ctrl->id_controller.Ki = params->Rs * omega_bw; // 52.43*10 = 524.3
     ctrl->id_controller.integral = 0.0f;
     ctrl->id_controller.out_min = -max_voltage;
     ctrl->id_controller.out_max = max_voltage;
 
-    ctrl->iq_controller.Kp = 0.5f;
-    ctrl->iq_controller.Ki = 50.0f;
+    ctrl->iq_controller.Kp = sigma_Ls * omega_bw;
+    ctrl->iq_controller.Ki = params->Rs * omega_bw;
     ctrl->iq_controller.integral = 0.0f;
     ctrl->iq_controller.out_min = -max_voltage;
     ctrl->iq_controller.out_max = max_voltage;
@@ -61,14 +69,19 @@ void Motor_Init(const Motor_Parameters_t *params, Motor_Control_t *ctrl)
 
 static inline float pi_run(PI_t *pi, float err, float Ts)
 {
-    // integrator
-    pi->integral += (pi->Ki * err) * Ts;
+    float proportional = pi->Kp * err;
+    float output_preview = proportional + pi->integral;
 
-    // anti-windup clamp integrator (simple)
-    if (pi->integral > pi->out_max) pi->integral = pi->out_max;
-    if (pi->integral < pi->out_min) pi->integral = pi->out_min;
+    // Conditional integration (anti-windup): only integrate when output is
+    // not saturated, or when the error would reduce the saturation.
+    int sat_hi = (output_preview >= pi->out_max);
+    int sat_lo = (output_preview <= pi->out_min);
 
-    float out = pi->Kp * err + pi->integral;
+    if ((!sat_hi || err < 0.0f) && (!sat_lo || err > 0.0f)) {
+        pi->integral += (pi->Ki * err) * Ts;
+    }
+
+    float out = proportional + pi->integral;
 
     // output clamp
     if (out > pi->out_max) out = pi->out_max;
@@ -145,13 +158,15 @@ void svpwm_test(void) {
 
 }
 
-static inline void Flux_Slip_Update(Motor_Control_t *control, const Motor_Parameters_t *params) {
+static inline void Flux_Slip_Update(Motor_Control_t *control, const Motor_Parameters_t *params,
+                                     float id_ref, float iq_for_slip) {
 
     // Avoid division by zero
     const float PSI_MIN = 1e-3f;
 
-    // d(psi_r)/dt = (Lm/Tr) * i_d - (1/Tr) * psi_r
-    float dpsi = (params->Lm / params->Tr) * control->i_dq.d - (1.0f / params->Tr) * control->psi_r;
+    // Flux estimation uses REFERENCE id (feedforward)
+    // d(psi_r)/dt = (Lm/Tr) * id_ref - (1/Tr) * psi_r
+    float dpsi = (params->Lm / params->Tr) * id_ref - (1.0f / params->Tr) * control->psi_r;
     control->psi_r += dpsi * params->Ts;
     
     if (control->psi_r < PSI_MIN) {
@@ -159,7 +174,7 @@ static inline void Flux_Slip_Update(Motor_Control_t *control, const Motor_Parame
     }
 
     // omega_sl = (Lm / Tr) * i_q / psi_r
-    control->omega_sl = (params->Lm / params->Tr) * (control->i_dq.q / control->psi_r);
+    control->omega_sl = (params->Lm / params->Tr) * (iq_for_slip / control->psi_r);
 
     // theta_sl = theta_sl + omega_sl * Ts
     control->theta_sl = WrapAngle0To2Pi(control->theta_sl + control->omega_sl * params->Ts);
@@ -170,13 +185,14 @@ static inline void Flux_Slip_Update(Motor_Control_t *control, const Motor_Parame
 void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
                       float ia, float ib,
                       float id_ref_cmnd, float iq_ref_cmnd,
-                      float theta_m, float vbus, SVPWM_Output_t *out_svpwm) {
+                      float theta_m, float omega_m, float vbus, SVPWM_Output_t *out_svpwm) {
     
     Clarke_Out_t clarke;
     Park_Out_t   park;
     SVPWM_Output_t svpwm_output;
 
     ctrl->theta_m = theta_m;
+    ctrl->omega_m = omega_m;
     ctrl->theta_e = WrapAngle0To2Pi(ctrl->theta_m * (float)params->pole_pairs + ctrl->theta_sl);
     clarke = Clarke_Transform(ia, ib);
 
@@ -185,7 +201,13 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
     park = Park_Transform(clarke.alpha, clarke.beta, sin_theta, cos_theta);
     
     ctrl->i_dq = park;
-    
+
+    // Low-pass filter on measured dq currents (20 Hz cutoff at 20 kHz)
+    // alpha = exp(-2*pi*fc*Ts) ≈ 0.9937 for fc=20Hz, Ts=50us
+    const float CURRENT_LPF_ALPHA = 0.9937f;
+    ctrl->i_dq_filt.d = CURRENT_LPF_ALPHA * ctrl->i_dq_filt.d + (1.0f - CURRENT_LPF_ALPHA) * park.d;
+    ctrl->i_dq_filt.q = CURRENT_LPF_ALPHA * ctrl->i_dq_filt.q + (1.0f - CURRENT_LPF_ALPHA) * park.q;
+
     float id_ref = 0.0f, iq_ref = 0.0f;
 
     switch (ctrl->state) {
@@ -197,6 +219,9 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
             ctrl->v_dq.d = 0.0f;
             ctrl->v_dq.q = 0.0f;
 
+            ctrl->id_controller.integral = 0.0f;
+            ctrl->iq_controller.integral = 0.0f;
+
             ctrl->state = MOTOR_STATE_FLUX_BUILD;
             break;
         case MOTOR_STATE_FLUX_BUILD:
@@ -204,7 +229,7 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
             id_ref = id_ref_cmnd;
             iq_ref = 0.0f;
             ctrl->flux_build_time += params->Ts;
-            Flux_Slip_Update(ctrl, params);
+            Flux_Slip_Update(ctrl, params, id_ref, 0);
             if (ctrl->flux_build_time >= 0.2f) { // 200 ms to build flux
                 ctrl->state = MOTOR_STATE_RUNNING;
             }
@@ -213,18 +238,34 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
         default:
             id_ref = id_ref_cmnd;
             iq_ref = iq_ref_cmnd;
-            Flux_Slip_Update(ctrl, params);
+            Flux_Slip_Update(ctrl, params, id_ref, iq_ref);
             break;
 
     }
 
-    float err_d = id_ref - ctrl->i_dq.d;
-    float err_q = iq_ref - ctrl->i_dq.q;
+    // Use filtered currents as PI feedback
+    float err_d = id_ref - ctrl->i_dq_filt.d;
+    float err_q = iq_ref - ctrl->i_dq_filt.q;
 
     ctrl->v_dq.d = pi_run(&ctrl->id_controller, err_d, params->Ts);
     ctrl->v_dq.q = pi_run(&ctrl->iq_controller, err_q, params->Ts);
 
+    // Feedforward decoupling using reference currents (avoids noise amplification)
+    float omega_e = (omega_m * (float)params->pole_pairs) + ctrl->omega_sl;
+    ctrl->v_dq.d += -omega_e * params->sigma_Ls * iq_ref;
+    ctrl->v_dq.q +=  omega_e * params->sigma_Ls * id_ref;
+
     Park_Out_t v_dq = ctrl->v_dq;
+
+    // Voltage vector circle limiter: keep |V| within SVPWM linear region
+    float v_max = vbus * 0.577350269f;  // vbus / sqrt(3)
+    float v_mag_sq = v_dq.d * v_dq.d + v_dq.q * v_dq.q;
+    if (v_mag_sq > v_max * v_max) {
+        float scale = v_max / sqrtf(v_mag_sq);
+        v_dq.d *= scale;
+        v_dq.q *= scale;
+    }
+
     Clarke_Out_t valpha_beta = Inv_Park_Transform(v_dq.d, v_dq.q, sin_theta, cos_theta);
 
     svpwm_output = SVPWM_Calculate(valpha_beta.alpha, valpha_beta.beta, vbus);

@@ -10,7 +10,9 @@ typedef struct {
     float Rs;           // Stator resistance
     float Rr;           // Rotor resistance (for induction motors)
     float Lm;           // Magnetizing inductance
+    float Ls;           // Stator inductance
     float Lr;           // Rotor inductance (for induction motors)
+    float sigma_Ls;     // Stator transient inductance: sigma * Ls
     uint8_t pole_pairs; // Number of pole pairs
 
     // Derived
@@ -57,7 +59,8 @@ typedef struct {
     float psi_r;        // Rotor flux magnitude (Wb)
 
     // Current feedback in dq
-    Park_Out_t i_dq;    // Measured d and q axis currents (A)
+    Park_Out_t i_dq;      // Raw measured d and q axis currents (A)
+    Park_Out_t i_dq_filt; // Filtered d and q axis currents (A) — PI feedback
 
     // Voltage command in dq
     Park_Out_t v_dq;    // d and q axis voltage commands (V)
@@ -78,6 +81,6 @@ void Motor_Init(const Motor_Parameters_t *params, Motor_Control_t *ctrl);
 void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
                       float ia, float ib,
                       float id_ref_cmnd, float iq_ref_cmnd,
-                      float theta_m, float vbus, SVPWM_Output_t *out_svpwm);
+                      float theta_m, float omega_m, float vbus, SVPWM_Output_t *out_svpwm);
 void PWM_WriteCompareShadow(float cmp_a, float cmp_b, float cmp_c, float cmp_trigger);
 #endif /* __FOC_CONTROL_H */

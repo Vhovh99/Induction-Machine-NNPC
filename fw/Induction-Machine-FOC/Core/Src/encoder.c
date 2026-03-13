@@ -110,6 +110,12 @@ void Encoder_Update(Encoder_Handle_t *enc, float dt_sec)
 
         enc->position_counts += delta;
         enc->last_count = cnt;
+
+        // Speed estimation: compute from position delta
+        float delta_rad = ((float)delta / (float)enc->counts_per_rev) * ENCODER_TWO_PI;
+        float speed_raw = delta_rad / dt_sec;
+        // Low-pass filter speed (alpha=0.95 gives ~3Hz cutoff at 20kHz)
+        enc->speed_rad_per_sec = lpf1(enc->speed_rad_per_sec, speed_raw, 0.95f);
     }
     
 }

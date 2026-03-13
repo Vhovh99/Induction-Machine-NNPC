@@ -59,10 +59,10 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define PHASE_B_CURR_Pin GPIO_PIN_0
-#define PHASE_B_CURR_GPIO_Port GPIOC
-#define PHASE_C_CURR_Pin GPIO_PIN_1
+#define PHASE_C_CURR_Pin GPIO_PIN_0
 #define PHASE_C_CURR_GPIO_Port GPIOC
+#define PHASE_B_CURR_Pin GPIO_PIN_1
+#define PHASE_B_CURR_GPIO_Port GPIOC
 #define VTSO_Pin GPIO_PIN_2
 #define VTSO_GPIO_Port GPIOC
 #define PHASE_A_CURR_Pin GPIO_PIN_0

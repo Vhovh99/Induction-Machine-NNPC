@@ -129,7 +129,7 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef* hadc)
     PA0     ------> ADC1_IN1
     PA1     ------> ADC1_IN2
     */
-    GPIO_InitStruct.Pin = PHASE_B_CURR_Pin|PHASE_C_CURR_Pin;
+    GPIO_InitStruct.Pin = PHASE_C_CURR_Pin|PHASE_B_CURR_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
@@ -211,7 +211,7 @@ void HAL_ADC_MspDeInit(ADC_HandleTypeDef* hadc)
     PA0     ------> ADC1_IN1
     PA1     ------> ADC1_IN2
     */
-    HAL_GPIO_DeInit(GPIOC, PHASE_B_CURR_Pin|PHASE_C_CURR_Pin);
+    HAL_GPIO_DeInit(GPIOC, PHASE_C_CURR_Pin|PHASE_B_CURR_Pin);
 
     HAL_GPIO_DeInit(GPIOA, PHASE_A_CURR_Pin|VBUS_SENS_Pin);
 

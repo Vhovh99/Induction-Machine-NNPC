@@ -74,7 +74,9 @@ const Motor_Parameters_t motor_params = {
     .Rs = 52.43f,         // Stator resistance (Ohms)
     .Rr = 45.4465f,       // Rotor resistance (Ohms)
     .Lm = 1.5133f,        // Magnetizing inductance (H)
+    .Ls = 1.6357f,        // Stator inductance (H) - approx equal to Lr
     .Lr = 1.6357f,        // Rotor inductance (H)
+    .sigma_Ls = 0.236f,   // Transient inductance: (1 - Lm^2/(Ls*Lr)) * Ls
     .pole_pairs = 2,      // Number of pole pairs
     .Tr = 1.6357f / 45.4465f, // Rotor time constant (s) Lr/Rr
     .id_ref = 0.0f,       // Initial d-axis current reference (A)
@@ -276,7 +278,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   SVPWM_Config_t svpwm_config = {
       .min_duty_window = 0.15f,  // 15% minimum duty for valid shunt
-      .trigger_offset = 0.05f,   // 5% offset from duty edge
+      .trigger_offset = 0.12f,   // 12% offset → ~510 ticks → ~2μs settling after dead-time
       .pwm_period_ticks = PWM_PERIOD_TICKS
   };
   SVPWM_Init(&svpwm_config);
@@ -299,7 +301,6 @@ int main(void)
   // PWM_STOP();
 
   /* USER CODE END 2 */
-
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -421,7 +422,7 @@ static void MX_ADC1_Init(void)
   */
   sConfigInjected.InjectedChannel = ADC_CHANNEL_1;
   sConfigInjected.InjectedRank = ADC_INJECTED_RANK_1;
-  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_47CYCLES_5;
+  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_12CYCLES_5;
   sConfigInjected.InjectedSingleDiff = ADC_SINGLE_ENDED;
   sConfigInjected.InjectedOffsetNumber = ADC_OFFSET_NONE;
   sConfigInjected.InjectedOffset = 0;
@@ -429,7 +430,7 @@ static void MX_ADC1_Init(void)
   sConfigInjected.InjectedDiscontinuousConvMode = DISABLE;
   sConfigInjected.AutoInjectedConv = DISABLE;
   sConfigInjected.QueueInjectedContext = DISABLE;
-  sConfigInjected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJEC_T1_TRGO;
+  sConfigInjected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJEC_T1_CC4;
   sConfigInjected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONV_EDGE_FALLING;
   sConfigInjected.InjecOversamplingMode = DISABLE;
   if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
@@ -439,7 +440,7 @@ static void MX_ADC1_Init(void)
 
   /** Configure Injected Channel
   */
-  sConfigInjected.InjectedChannel = ADC_CHANNEL_6;
+  sConfigInjected.InjectedChannel = ADC_CHANNEL_7;
   sConfigInjected.InjectedRank = ADC_INJECTED_RANK_2;
   if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
   {
@@ -448,7 +449,7 @@ static void MX_ADC1_Init(void)
 
   /** Configure Injected Channel
   */
-  sConfigInjected.InjectedChannel = ADC_CHANNEL_7;
+  sConfigInjected.InjectedChannel = ADC_CHANNEL_6;
   sConfigInjected.InjectedRank = ADC_INJECTED_RANK_3;
   if (HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected) != HAL_OK)
   {
@@ -746,7 +747,7 @@ static void MX_TIM1_Init(void)
   sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_ENABLE;
   sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_ENABLE;
   sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
-  sBreakDeadTimeConfig.DeadTime = 200;
+  sBreakDeadTimeConfig.DeadTime = 160;
   sBreakDeadTimeConfig.BreakState = TIM_BREAK_ENABLE;
   sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_LOW;
   sBreakDeadTimeConfig.BreakFilter = 10;
@@ -926,13 +927,14 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
     // currents = CurrentSense_Read();
     Encoder_Update(&encoder,1/20000.0f); // 20 kHz sampling rate
     float theta_m = Encoder_GetMechanicalAngleRad(&encoder);
+    float omega_m = Encoder_GetSpeedRadPerSec(&encoder);
     
     if (run_foc_loop) {
         SVPWM_Output_t new_svpwm = {0};
         FOC_Control_Loop(&motor_control, &motor_params, 
                           currents.Ia, currents.Ib, 
-                          0.4f, 0.3f, 
-                          theta_m, currents.Vbus, &new_svpwm);
+                          0.4f, 0.5f, 
+                          theta_m, omega_m, currents.Vbus, &new_svpwm);
 
         PWM_WriteCompareShadow(new_svpwm.duty_a, new_svpwm.duty_b, new_svpwm.duty_c, new_svpwm.trigger_point);
         // Store for next cycle
