@@ -5,6 +5,15 @@
 #include <stdint.h>
 #include "svpwm.h"
 
+/* -------- Tunable FOC Parameters -------- */
+#define FOC_PI_MAX_VOLTAGE      220.0f   // PI output clamp (V)
+#define FOC_CURRENT_PI_BW       30.0f    // Current loop bandwidth (rad/s)
+#define FOC_SPEED_RAMP_RATE     209.0f   // Speed ref slew rate (rad/s per s) ≈ 2000 rpm/s
+#define FOC_CURRENT_LPF_ALPHA   0.9937f  // dq current LPF coeff (20 Hz @ 20 kHz)
+#define FOC_FLUX_BUILD_TIME     0.2f     // Flux build duration (s)
+#define FOC_PSI_MIN             1e-3f    // Minimum rotor flux (Wb)
+#define FOC_ONE_BY_SQRT3        0.577350269f
+
 typedef struct {
     // <Motor Parameters>
     float Rs;           // Stator resistance
@@ -68,6 +77,10 @@ typedef struct {
     // PI controllers
     PI_t id_controller;
     PI_t iq_controller;
+    PI_t speed_controller;
+
+    // Speed reference rate limiter
+    float omega_ref_ramped;  // Rate-limited speed reference (rad/s)
 
     // Startup timing
     float flux_build_time; // Time to build up rotor flux (s)
@@ -80,7 +93,7 @@ void svpwm_test(void);
 void Motor_Init(const Motor_Parameters_t *params, Motor_Control_t *ctrl);
 void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
                       float ia, float ib,
-                      float id_ref_cmnd, float iq_ref_cmnd,
+                      float id_ref_cmnd, float omega_ref,
                       float theta_m, float omega_m, float vbus, SVPWM_Output_t *out_svpwm);
 void PWM_WriteCompareShadow(float cmp_a, float cmp_b, float cmp_c, float cmp_trigger);
 #endif /* __FOC_CONTROL_H */

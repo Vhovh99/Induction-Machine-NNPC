@@ -46,11 +46,11 @@ void Motor_Init(const Motor_Parameters_t *params, Motor_Control_t *ctrl)
 
     // Initialize PI controllers
     // Limits should be in VOLTS, not Amps!
-    float max_voltage = 220.0f; 
+    float max_voltage = FOC_PI_MAX_VOLTAGE;
 
     // PI tuned via pole-zero cancellation on stator transient model:
     //   Kp = sigma_Ls * omega_bw,  Ki = Rs * omega_bw
-    float omega_bw = 30.0f;
+    float omega_bw = FOC_CURRENT_PI_BW;
     float sigma_Ls = params->sigma_Ls;
 
     ctrl->id_controller.Kp = sigma_Ls * omega_bw;  // 0.236*10 = 2.36
@@ -64,6 +64,17 @@ void Motor_Init(const Motor_Parameters_t *params, Motor_Control_t *ctrl)
     ctrl->iq_controller.integral = 0.0f;
     ctrl->iq_controller.out_min = -max_voltage;
     ctrl->iq_controller.out_max = max_voltage;
+
+    // Speed PI controller
+    // Output is iq_ref (A), so limits are the max torque current
+    float iq_limit = params->iq_max;
+    ctrl->speed_controller.Kp = 0.5f;
+    ctrl->speed_controller.Ki = 5.0f;
+    ctrl->speed_controller.integral = 0.0f;
+    ctrl->speed_controller.out_min = -iq_limit;
+    ctrl->speed_controller.out_max = iq_limit;
+
+    ctrl->omega_ref_ramped = 0.0f;
     
 }
 
@@ -107,23 +118,9 @@ void open_loop_voltage_control(float Vd_ref, float Vq_ref, float angle_rad) {
 }
 
 void svpwm_test(void) {
-    // open_loop_voltage_control(0.0 * 311, 0.0 * 311, 0.0);
-    // HAL_Delay(500);
 
-    // for (int i= 0; i < 500; i++) {
-    //     float mech_deg = (float)i * (360.0f / (float)500);
-    //     float elec_deg = mech_deg * 2 /*MOTOR_POLE_PAIRS*/;
-    //     open_loop_voltage_control(0.0 * 311, 0.0 * 311, DEG_TO_RAD(elec_deg));
-    //     HAL_Delay(3);
-    // }
-    // open_loop_voltage_control(0.0f, 0.0f, 0.0f);
-
-    float v_bus = 311.0f;          // Your DC Bus Voltage (e.g. 24V for testing)
     float max_freq = 5.0f;        // Target frequency in Hz (keep it low for open loop!)
     float voltage_amplitude = 40.0f; // Start with small voltage  
-
-    // open_loop_voltage_control(voltage_amplitude, 0.0f, 0.0f);
-    // HAL_Delay(1000); 
 
     float theta = 0.0f;
     float dt = 0.001f; // 1ms delay = 1kHz loop approximation
@@ -162,7 +159,7 @@ static inline void Flux_Slip_Update(Motor_Control_t *control, const Motor_Parame
                                      float id_ref, float iq_for_slip) {
 
     // Avoid division by zero
-    const float PSI_MIN = 1e-3f;
+    const float PSI_MIN = FOC_PSI_MIN;
 
     // Flux estimation uses REFERENCE id (feedforward)
     // d(psi_r)/dt = (Lm/Tr) * id_ref - (1/Tr) * psi_r
@@ -184,7 +181,7 @@ static inline void Flux_Slip_Update(Motor_Control_t *control, const Motor_Parame
 
 void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
                       float ia, float ib,
-                      float id_ref_cmnd, float iq_ref_cmnd,
+                      float id_ref_cmnd, float omega_ref,
                       float theta_m, float omega_m, float vbus, SVPWM_Output_t *out_svpwm) {
     
     Clarke_Out_t clarke;
@@ -202,11 +199,9 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
     
     ctrl->i_dq = park;
 
-    // Low-pass filter on measured dq currents (20 Hz cutoff at 20 kHz)
-    // alpha = exp(-2*pi*fc*Ts) ≈ 0.9937 for fc=20Hz, Ts=50us
-    const float CURRENT_LPF_ALPHA = 0.9937f;
-    ctrl->i_dq_filt.d = CURRENT_LPF_ALPHA * ctrl->i_dq_filt.d + (1.0f - CURRENT_LPF_ALPHA) * park.d;
-    ctrl->i_dq_filt.q = CURRENT_LPF_ALPHA * ctrl->i_dq_filt.q + (1.0f - CURRENT_LPF_ALPHA) * park.q;
+    // Low-pass filter on measured dq currents
+    ctrl->i_dq_filt.d = FOC_CURRENT_LPF_ALPHA * ctrl->i_dq_filt.d + (1.0f - FOC_CURRENT_LPF_ALPHA) * park.d;
+    ctrl->i_dq_filt.q = FOC_CURRENT_LPF_ALPHA * ctrl->i_dq_filt.q + (1.0f - FOC_CURRENT_LPF_ALPHA) * park.q;
 
     float id_ref = 0.0f, iq_ref = 0.0f;
 
@@ -221,6 +216,8 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
 
             ctrl->id_controller.integral = 0.0f;
             ctrl->iq_controller.integral = 0.0f;
+            ctrl->speed_controller.integral = 0.0f;
+            ctrl->omega_ref_ramped = 0.0f;
 
             ctrl->state = MOTOR_STATE_FLUX_BUILD;
             break;
@@ -230,14 +227,25 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
             iq_ref = 0.0f;
             ctrl->flux_build_time += params->Ts;
             Flux_Slip_Update(ctrl, params, id_ref, 0);
-            if (ctrl->flux_build_time >= 0.2f) { // 200 ms to build flux
+            if (ctrl->flux_build_time >= FOC_FLUX_BUILD_TIME) {
                 ctrl->state = MOTOR_STATE_RUNNING;
             }
             break;
         case MOTOR_STATE_RUNNING:
         default:
             id_ref = id_ref_cmnd;
-            iq_ref = iq_ref_cmnd;
+
+            // Speed reference rate limiter
+            float ramp_step = FOC_SPEED_RAMP_RATE * params->Ts;
+            float diff = omega_ref - ctrl->omega_ref_ramped;
+            if (diff > ramp_step) diff = ramp_step;
+            if (diff < -ramp_step) diff = -ramp_step;
+            ctrl->omega_ref_ramped += diff;
+
+            // Outer speed PI: error → iq_ref
+            float speed_err = ctrl->omega_ref_ramped - omega_m;
+            iq_ref = pi_run(&ctrl->speed_controller, speed_err, params->Ts);
+
             Flux_Slip_Update(ctrl, params, id_ref, iq_ref);
             break;
 
@@ -258,7 +266,7 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
     Park_Out_t v_dq = ctrl->v_dq;
 
     // Voltage vector circle limiter: keep |V| within SVPWM linear region
-    float v_max = vbus * 0.577350269f;  // vbus / sqrt(3)
+    float v_max = vbus * FOC_ONE_BY_SQRT3;
     float v_mag_sq = v_dq.d * v_dq.d + v_dq.q * v_dq.q;
     if (v_mag_sq > v_max * v_max) {
         float scale = v_max / sqrtf(v_mag_sq);

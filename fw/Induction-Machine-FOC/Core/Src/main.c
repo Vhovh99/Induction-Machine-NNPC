@@ -931,9 +931,10 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
     
     if (run_foc_loop) {
         SVPWM_Output_t new_svpwm = {0};
+        float speed_ref = 10.0f;  // Speed reference in rad/s (~955 RPM)
         FOC_Control_Loop(&motor_control, &motor_params, 
                           currents.Ia, currents.Ib, 
-                          0.4f, 0.5f, 
+                          0.4f, speed_ref, 
                           theta_m, omega_m, currents.Vbus, &new_svpwm);
 
         PWM_WriteCompareShadow(new_svpwm.duty_a, new_svpwm.duty_b, new_svpwm.duty_c, new_svpwm.trigger_point);
