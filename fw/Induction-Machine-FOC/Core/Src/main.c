@@ -34,6 +34,7 @@
 #include <string.h>
 #include "foc_math.h"
 #include "current_sense.h"
+#include "serial_protocol.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -65,6 +66,8 @@ CORDIC_HandleTypeDef hcordic;
 
 UART_HandleTypeDef hlpuart1;
 UART_HandleTypeDef huart1;
+DMA_HandleTypeDef hdma_lpuart1_rx;
+DMA_HandleTypeDef hdma_lpuart1_tx;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
@@ -93,34 +96,10 @@ uint8_t run_foc_loop = 1; // Set to 0 to disable FOC during testing
 /* Temperature Variable */
 float temperature_VTSO = 0.0f;
 
-
-/* UART Communication Buffer */
-#define UART_RX_BUFFER_SIZE 64
-static uint8_t uart_rx_buffer[UART_RX_BUFFER_SIZE];
-static uint8_t uart_rx_byte;
-static uint16_t uart_rx_index = 0;
-static uint8_t uart_new_cmd = 0;
-
-/* Binary Telemetry Packet Structure - Single Sample (20 bytes)
- * Format: Speed, Phase (Electrical angle), Ia, Ib, Ic (currents), Iq (Torque), Timestamp, Flags, CRC8
- */
-typedef struct {
-    uint8_t header;           // 0xAA sync marker
-    uint8_t format_version;   // Version 0x01
-    int16_t ia;               // Phase A current (mA scaled)
-    int16_t ib;               // Phase B current (mA scaled)
-    int16_t ic;               // Phase C current (mA scaled)
-    int16_t speed_rpm;        // Motor speed (RPM)
-    uint16_t timestamp_ms;    // Timestamp (milliseconds)
-    int16_t iq_ma;            // Torque current (mA scaled)
-    int16_t theta_elec_deg;   // Electrical angle (degrees, -180 to +180, stored as 0.1 deg resolution)
-    uint8_t flags;            // Status flags
-    uint8_t checksum;         // CRC8 checksum
-} __attribute__((packed)) Telemetry_Binary_t;
-
-/* Telemetry DMA Double Buffer */
-#define TELEMETRY_BUFFER_SIZE 128
-static uint8_t telemetry_buffer[TELEMETRY_BUFFER_SIZE];
+/* Serial Protocol */
+Proto_Handle_t proto = {0};
+extern volatile float proto_speed_ref;
+extern volatile float proto_id_ref;
 
 Encoder_Handle_t encoder = {0};
 CurSense_Data_t  currents = {0};
@@ -130,6 +109,7 @@ CurSense_Data_t  currents = {0};
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_CORDIC_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_ADC2_Init(void);
@@ -168,27 +148,6 @@ void PWM_STOP(void)
     HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_3);  // CH3N
 }
 
-
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-    if (huart->Instance == USART3)
-    {
-        if (uart_rx_byte == '\n' || uart_rx_byte == '\r') {
-             uart_rx_buffer[uart_rx_index] = '\0'; // Null terminate
-             uart_rx_index = 0;
-             uart_new_cmd = 1; // Signal main loop
-        } else {
-             if (uart_rx_index < UART_RX_BUFFER_SIZE - 1) {
-                 uart_rx_buffer[uart_rx_index++] = uart_rx_byte;
-             } else {
-                 // Buffer overflow, reset
-                 uart_rx_index = 0;
-             }
-        }
-        // Restart reception
-        HAL_UART_Receive_IT(&huart1, &uart_rx_byte, 1);
-    }
-}
 
 float ADC_Measure_VTSO(void) {
     //HAL_ADC_Start(&hadc2);
@@ -268,6 +227,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_CORDIC_Init();
   MX_ADC1_Init();
   MX_ADC2_Init();
@@ -295,7 +255,13 @@ int main(void)
 
   Motor_Init(&motor_params, &motor_control);
 
-  PWM_START();
+  // PWM_START();
+
+  Proto_Init(&proto, &hlpuart1);
+  Proto_StartReceive(&proto);
+
+  /* Disable DMA RX half-transfer & transfer-complete interrupts — we poll */
+  __HAL_DMA_DISABLE_IT(hlpuart1.hdmarx, DMA_IT_HT | DMA_IT_TC);
 
   // svpwm_test();
   // PWM_STOP();
@@ -310,16 +276,25 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-    // if (ADC_Measure_VTSO() > 100.0f) {
-    //     PWM_STOP();
-    // }
+    /* Poll DMA circular buffer for incoming protocol frames */
+    Proto_Poll(&proto);
 
-    // float temp = Encoder_GetMechanicalAngleRad(&encoder); 
-    // temp = RAD_TO_DEG(temp);
-    char buf [64];
-    sprintf(buf, "%.2f,%.2f\r\n", motor_control.i_dq.d, motor_control.i_dq.q);
-    HAL_UART_Transmit(&hlpuart1, (uint8_t*)buf, strlen(buf), HAL_MAX_DELAY);
-    // HAL_Delay(10);
+    /* Send telemetry at configured rate */
+    if (proto.telem_divider > 0) {
+        uint32_t now = HAL_GetTick();
+        if (now - proto.telem_last_ms >= proto.telem_divider) {
+            proto.telem_last_ms = now;
+            Telemetry_Packet_t telem;
+            telem.id      = motor_control.i_dq_filt.d;
+            telem.iq      = motor_control.i_dq_filt.q;
+            telem.vbus    = currents.Vbus;
+            telem.omega_m = motor_control.omega_m;
+            telem.ia      = currents.Ia;
+            telem.ib      = currents.Ib;
+            telem.ic      = currents.Ic;
+            Proto_SendTelemetry(&proto, &telem);
+        }
+    }
 
   }
   /* USER CODE END 3 */
@@ -829,6 +804,26 @@ static void MX_TIM2_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMAMUX1_CLK_ENABLE();
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 3, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+  /* DMA1_Channel2_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel2_IRQn, 3, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel2_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -931,10 +926,9 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
     
     if (run_foc_loop) {
         SVPWM_Output_t new_svpwm = {0};
-        float speed_ref = 10.0f;  // Speed reference in rad/s (~955 RPM)
         FOC_Control_Loop(&motor_control, &motor_params, 
                           currents.Ia, currents.Ib, 
-                          0.4f, speed_ref, 
+                          proto_id_ref, proto_speed_ref, 
                           theta_m, omega_m, currents.Vbus, &new_svpwm);
 
         PWM_WriteCompareShadow(new_svpwm.duty_a, new_svpwm.duty_b, new_svpwm.duty_c, new_svpwm.trigger_point);

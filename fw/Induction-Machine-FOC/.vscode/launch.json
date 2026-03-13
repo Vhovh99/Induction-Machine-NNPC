@@ -14,7 +14,7 @@
             "runEntry": "main",
             "liveWatch": {
                 "enabled": true,
-                "samplesPerSecond": "4"
+                "samplesPerSecond": "14"
             },
             "imagesAndSymbols": [
                 {
