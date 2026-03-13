@@ -238,7 +238,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   SVPWM_Config_t svpwm_config = {
       .min_duty_window = 0.15f,  // 15% minimum duty for valid shunt
-      .trigger_offset = 0.12f,   // 12% offset → ~510 ticks → ~2μs settling after dead-time
+      .trigger_offset = 0.15f,   // 15% offset → ~510 ticks → ~2μs settling after dead-time
       .pwm_period_ticks = PWM_PERIOD_TICKS
   };
   SVPWM_Init(&svpwm_config);
@@ -291,7 +291,9 @@ int main(void)
             telem.omega_m = motor_control.omega_m;
             telem.ia      = currents.Ia;
             telem.ib      = currents.Ib;
-            telem.ic      = currents.Ic;
+            telem.ic             = currents.Ic;
+            telem.theta_e        = motor_control.theta_e;
+            telem.theta_e_integ  = motor_control.theta_e_integ;
             Proto_SendTelemetry(&proto, &telem);
         }
     }

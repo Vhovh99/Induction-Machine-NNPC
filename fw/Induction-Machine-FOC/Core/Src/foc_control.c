@@ -33,6 +33,8 @@ void Motor_Init(const Motor_Parameters_t *params, Motor_Control_t *ctrl)
     ctrl->state = MOTOR_STATE_IDLE;
     ctrl->theta_sl = 0.0f;
     ctrl->omega_sl = 0.0f;
+    ctrl->omega_sl_filt = 0.0f;
+    ctrl->theta_e_integ = 0.0f;
 
     ctrl->psi_r = 0.0f;
 
@@ -173,8 +175,13 @@ static inline void Flux_Slip_Update(Motor_Control_t *control, const Motor_Parame
     // omega_sl = (Lm / Tr) * i_q / psi_r
     control->omega_sl = (params->Lm / params->Tr) * (iq_for_slip / control->psi_r);
 
-    // theta_sl = theta_sl + omega_sl * Ts
-    control->theta_sl = WrapAngle0To2Pi(control->theta_sl + control->omega_sl * params->Ts);
+    // Low-pass filter omega_sl before integration — prevents noisy iq_ref
+    // from corrupting theta_e (effect grows with electrical speed)
+    control->omega_sl_filt = FOC_OMEGA_SL_LPF_ALPHA * control->omega_sl_filt
+                           + (1.0f - FOC_OMEGA_SL_LPF_ALPHA) * control->omega_sl;
+
+    // theta_sl = theta_sl + omega_sl_filt * Ts
+    control->theta_sl = WrapAngle0To2Pi(control->theta_sl + control->omega_sl_filt * params->Ts);
 
 }
 
@@ -191,10 +198,16 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
     ctrl->theta_m = theta_m;
     ctrl->omega_m = omega_m;
     ctrl->theta_e = WrapAngle0To2Pi(ctrl->theta_m * (float)params->pole_pairs + ctrl->theta_sl);
+
+    /* Integration-based theta_e: accumulate (omega_m * p + omega_sl_filt) * Ts
+     * Compared to encoder+slip this avoids encoder discretisation noise
+     * but drifts without a reset anchor. Reset at IDLE. */
+    float omega_e_integ = omega_m * (float)params->pole_pairs + ctrl->omega_sl_filt;
+    ctrl->theta_e_integ = WrapAngle0To2Pi(ctrl->theta_e_integ + omega_e_integ * params->Ts);
     clarke = Clarke_Transform(ia, ib);
 
     float sin_theta, cos_theta;
-    pre_calc_sin_cos(ctrl->theta_e, &sin_theta, &cos_theta);
+    pre_calc_sin_cos(ctrl->theta_e_integ, &sin_theta, &cos_theta);
     park = Park_Transform(clarke.alpha, clarke.beta, sin_theta, cos_theta);
     
     ctrl->i_dq = park;
@@ -202,7 +215,7 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
     // Low-pass filter on measured dq currents
     ctrl->i_dq_filt.d = FOC_CURRENT_LPF_ALPHA * ctrl->i_dq_filt.d + (1.0f - FOC_CURRENT_LPF_ALPHA) * park.d;
     ctrl->i_dq_filt.q = FOC_CURRENT_LPF_ALPHA * ctrl->i_dq_filt.q + (1.0f - FOC_CURRENT_LPF_ALPHA) * park.q;
-
+    
     float id_ref = 0.0f, iq_ref = 0.0f;
 
     switch (ctrl->state) {
@@ -218,6 +231,8 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
             ctrl->iq_controller.integral = 0.0f;
             ctrl->speed_controller.integral = 0.0f;
             ctrl->omega_ref_ramped = 0.0f;
+            ctrl->omega_sl_filt = 0.0f;
+            ctrl->theta_e_integ = 0.0f;
 
             ctrl->state = MOTOR_STATE_FLUX_BUILD;
             break;
@@ -259,7 +274,7 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
     ctrl->v_dq.q = pi_run(&ctrl->iq_controller, err_q, params->Ts);
 
     // Feedforward decoupling using reference currents (avoids noise amplification)
-    float omega_e = (omega_m * (float)params->pole_pairs) + ctrl->omega_sl;
+    float omega_e = (omega_m * (float)params->pole_pairs) + ctrl->omega_sl_filt;
     ctrl->v_dq.d += -omega_e * params->sigma_Ls * iq_ref;
     ctrl->v_dq.q +=  omega_e * params->sigma_Ls * id_ref;
 

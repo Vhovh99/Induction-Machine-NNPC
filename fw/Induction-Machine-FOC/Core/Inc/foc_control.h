@@ -7,9 +7,10 @@
 
 /* -------- Tunable FOC Parameters -------- */
 #define FOC_PI_MAX_VOLTAGE      220.0f   // PI output clamp (V)
-#define FOC_CURRENT_PI_BW       30.0f    // Current loop bandwidth (rad/s)
+#define FOC_CURRENT_PI_BW       15.0f    // Current loop bandwidth (rad/s)
 #define FOC_SPEED_RAMP_RATE     209.0f   // Speed ref slew rate (rad/s per s) ≈ 2000 rpm/s
-#define FOC_CURRENT_LPF_ALPHA   0.9937f  // dq current LPF coeff (20 Hz @ 20 kHz)
+#define FOC_CURRENT_LPF_ALPHA   0.9969f  // dq current LPF coeff (10 Hz @ 20 kHz)
+#define FOC_OMEGA_SL_LPF_ALPHA  0.9906f  // slip freq LPF coeff  (30 Hz @ 20 kHz)
 #define FOC_FLUX_BUILD_TIME     0.2f     // Flux build duration (s)
 #define FOC_PSI_MIN             1e-3f    // Minimum rotor flux (Wb)
 #define FOC_ONE_BY_SQRT3        0.577350269f
@@ -60,9 +61,11 @@ typedef struct {
     float omega_m;      // Mechanical angular velocity (rad/s)
 
     // Angle generation
-    float theta_sl;     // Slip angle (rad)
-    float omega_sl;     // Slip angular velocity (rad/s)
-    float theta_e;      // Electrical angle (rad)
+    float theta_sl;       // Slip angle (rad)
+    float omega_sl;       // Slip angular velocity (rad/s)
+    float omega_sl_filt;  // Low-pass filtered slip frequency (rad/s)
+    float theta_e;        // Electrical angle — encoder+slip (rad)
+    float theta_e_integ;  // Electrical angle — pure speed integration (rad)
 
     // Flux estimator ( rotor flux angle estimation i d-axis)
     float psi_r;        // Rotor flux magnitude (Wb)
