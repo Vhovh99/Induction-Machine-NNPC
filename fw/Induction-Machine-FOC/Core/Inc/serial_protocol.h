@@ -21,7 +21,7 @@
 /* -------- Command IDs (Host → MCU) -------- */
 #define CMD_MOTOR_START         0x01
 #define CMD_MOTOR_STOP          0x02
-#define CMD_SET_SPEED_REF       0x03  /* payload: float omega_ref (rad/s) */
+#define CMD_SET_SPEED_REF       0x03  /* payload: float omega_ref (RPM) */
 #define CMD_SET_ID_REF          0x04  /* payload: float id_ref (A) */
 #define CMD_SET_CURRENT_PI      0x05  /* payload: float Kp, float Ki */
 #define CMD_SET_SPEED_PI        0x06  /* payload: float Kp, float Ki */
@@ -45,18 +45,18 @@ typedef struct {
     float id;             // d-axis current (A)
     float iq;             // q-axis current (A)
     float vbus;           // DC bus voltage (V)
-    float omega_m;        // Mechanical speed (rad/s)
+    float omega_m;        // Mechanical speed (RPM)
     float ia;             // Phase A current (A)
     float ib;             // Phase B current (A)
     float ic;             // Phase C current (A)
-    float theta_e;        // Electrical angle — encoder+slip (rad)
-    float theta_e_integ;  // Electrical angle — speed integration (rad)
+    float theta_e;        // Electrical angle — integrated omega_e (rad)
+    float torque_e;       // Estimated electromagnetic torque (N·m)
 } __attribute__((packed)) Telemetry_Packet_t;
 
 /* -------- Status Packet (16 bytes) -------- */
 typedef struct {
     uint8_t  motor_state;     // Motor_state_e
-    float    omega_ref;       // Current speed reference (rad/s)
+    float    omega_ref;       // Current speed reference (RPM)
     float    id_ref;          // Current id reference (A)
     uint8_t  fault_flags;     // Fault bits
     uint16_t uptime_s;        // Uptime in seconds

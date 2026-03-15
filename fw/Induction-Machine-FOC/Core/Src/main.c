@@ -76,12 +76,12 @@ TIM_HandleTypeDef htim2;
 const Motor_Parameters_t motor_params = {
     .Rs = 52.43f,         // Stator resistance (Ohms)
     .Rr = 45.4465f,       // Rotor resistance (Ohms)
-    .Lm = 1.5133f,        // Magnetizing inductance (H)
-    .Ls = 1.6357f,        // Stator inductance (H) - approx equal to Lr
-    .Lr = 1.6357f,        // Rotor inductance (H)
-    .sigma_Ls = 0.236f,   // Transient inductance: (1 - Lm^2/(Ls*Lr)) * Ls
+    .Lm = 0.512f,         // Magnetizing inductance (H) — identified from no-load Vq test
+    .Ls = 0.643f,         // Stator inductance (H) — solved from sigma_Ls=0.236 and Lm
+    .Lr = 0.643f,         // Rotor inductance (H) — symmetric machine (Ls=Lr)
+    .sigma_Ls = 0.236f,   // Transient inductance: (1 - Lm^2/(Ls*Lr)) * Ls — from short-circuit test
     .pole_pairs = 2,      // Number of pole pairs
-    .Tr = 1.6357f / 45.4465f, // Rotor time constant (s) Lr/Rr
+    .Tr = 0.643f / 45.4465f, // Rotor time constant Lr/Rr = 14.1 ms (was 36ms with wrong Lr)
     .id_ref = 0.0f,       // Initial d-axis current reference (A)
     .iq_ref = 0.0f,       // Initial q-axis current reference (A)
     .id_max = 2.0f,       // Maximum d-axis current (A)
@@ -124,6 +124,34 @@ static void MX_LPUART1_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+void send_telemetry(void) {
+    /* Send telemetry at configured rate */
+    if (proto.telem_divider > 0) {
+        uint32_t now = HAL_GetTick();
+        if (now - proto.telem_last_ms >= proto.telem_divider) {
+            proto.telem_last_ms = now;
+            Telemetry_Packet_t telem;
+            if (run_foc_loop) {
+                telem.id       = motor_control.i_dq.d;
+                telem.iq       = motor_control.i_dq.q;
+                telem.omega_m  = motor_control.omega_m;
+                telem.ia       = currents.Ia;
+                telem.ib       = currents.Ib;
+                telem.ic       = currents.Ic;
+                telem.theta_e  = motor_control.theta_e;
+                telem.torque_e = motor_control.torque_e;
+            } else {
+                telem.id = telem.iq = 0.0f;
+                telem.omega_m = 0.0f;
+                telem.ia = telem.ib = telem.ic = 0.0f;
+                telem.theta_e = telem.torque_e = 0.0f;
+            }
+            telem.vbus = currents.Vbus;
+            Proto_SendTelemetry(&proto, &telem);
+       }
+    }
+}
+
 void PWM_START(void)
 {
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1 );
@@ -150,8 +178,8 @@ void PWM_STOP(void)
 
 
 float ADC_Measure_VTSO(void) {
-    //HAL_ADC_Start(&hadc2);
-    //if (HAL_ADC_PollForConversion(&hadc2, 200) == HAL_OK) {
+    HAL_ADC_Start(&hadc2);
+    if (HAL_ADC_PollForConversion(&hadc2, 200) == HAL_OK) {
         uint16_t adc_value = HAL_ADC_GetValue(&hadc2);
         // Calculate Voltage: V = (ADC / 4095) * 3.3V
         uint16_t voltage_mv = (adc_value * 3300) / 4095;
@@ -159,7 +187,7 @@ float ADC_Measure_VTSO(void) {
         // Calculate Temperature from Graph (Typ line):
         // y = kx + b; where k = 18.666666667f, b = 700 (mV at 0°C)
         temperature_VTSO = (voltage_mv - 700) / 18.666666667f; // in °C
-    //}
+    }
     //HAL_ADC_Stop(&hadc2);
     
     return temperature_VTSO;
@@ -279,24 +307,21 @@ int main(void)
     /* Poll DMA circular buffer for incoming protocol frames */
     Proto_Poll(&proto);
 
-    /* Send telemetry at configured rate */
-    if (proto.telem_divider > 0) {
-        uint32_t now = HAL_GetTick();
-        if (now - proto.telem_last_ms >= proto.telem_divider) {
-            proto.telem_last_ms = now;
-            Telemetry_Packet_t telem;
-            telem.id      = motor_control.i_dq_filt.d;
-            telem.iq      = motor_control.i_dq_filt.q;
-            telem.vbus    = currents.Vbus;
-            telem.omega_m = motor_control.omega_m;
-            telem.ia      = currents.Ia;
-            telem.ib      = currents.Ib;
-            telem.ic             = currents.Ic;
-            telem.theta_e        = motor_control.theta_e;
-            telem.theta_e_integ  = motor_control.theta_e_integ;
-            Proto_SendTelemetry(&proto, &telem);
+    /* Temperature watchdog at 1 Hz (ADC2 polled, not interrupt-driven) */
+    static uint32_t temp_last_ms = 0;
+    uint32_t now_temp = HAL_GetTick();
+    if (now_temp - temp_last_ms >= 1000U) {
+        temp_last_ms = now_temp;
+        if (ADC_Measure_VTSO() > 100.0f) {
+            PWM_STOP();
         }
     }
+
+    send_telemetry();
+
+    // char buf [64];
+    // int len =  sprintf(buf, "%.2f,%.2f, %.2f\r\n", currents.Ia, currents.Ib, currents.Ic);
+    // HAL_UART_Transmit(&hlpuart1, (uint8_t*)buf, len, 1);
 
   }
   /* USER CODE END 3 */
@@ -944,11 +969,6 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
 
     // Set PC9 low
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
-    if (!(HAL_ADC_GetState(&hadc2) & HAL_ADC_STATE_REG_BUSY))
-    {
-        HAL_ADC_Start_IT(&hadc2);
-    }
-
 }
 
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {

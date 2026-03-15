@@ -9,7 +9,7 @@ extern uint8_t run_foc_loop;
 
 /* Runtime-modifiable references (written by protocol, read by ISR) */
 volatile float proto_speed_ref  = 0.0f;
-volatile float proto_id_ref     = 0.4f;
+volatile float proto_id_ref     = 1.13f; /* Nominal magnetising current (A) */
 
 /* ---- CRC-8/MAXIM (polynomial 0x31, init 0x00) ---- */
 static uint8_t crc8(const uint8_t *data, uint16_t len)
@@ -87,9 +87,9 @@ static void process_frame(Proto_Handle_t *proto)
     case CMD_SET_SPEED_REF:
         if (len != 4) { send_nack(proto, cmd, ERR_BAD_LENGTH); break; }
         {
-            float val;
-            memcpy(&val, p, 4);
-            proto_speed_ref = val;
+            float rpm;
+            memcpy(&rpm, p, 4);
+            proto_speed_ref = rpm * (3.14159265f / 30.0f); /* RPM -> rad/s */
         }
         send_ack(proto, cmd);
         break;
@@ -135,7 +135,7 @@ static void process_frame(Proto_Handle_t *proto)
         {
             Status_Packet_t st;
             st.motor_state = (uint8_t)motor_control.state;
-            st.omega_ref   = proto_speed_ref;
+            st.omega_ref   = proto_speed_ref * (30.0f / 3.14159265f); /* rad/s -> RPM */
             st.id_ref      = proto_id_ref;
             st.fault_flags = 0;
             st.uptime_s    = (uint16_t)(HAL_GetTick() / 1000);

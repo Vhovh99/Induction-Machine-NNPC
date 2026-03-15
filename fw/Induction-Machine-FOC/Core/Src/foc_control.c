@@ -34,15 +34,13 @@ void Motor_Init(const Motor_Parameters_t *params, Motor_Control_t *ctrl)
     ctrl->theta_sl = 0.0f;
     ctrl->omega_sl = 0.0f;
     ctrl->omega_sl_filt = 0.0f;
-    ctrl->theta_e_integ = 0.0f;
+    ctrl->omega_e = 0.0f;
+    ctrl->theta_e = 0.0f;
 
     ctrl->psi_r = 0.0f;
 
     ctrl->v_dq.d = 0.0f;
     ctrl->v_dq.q = 0.0f;
-
-    ctrl->i_dq_filt.d = 0.0f;
-    ctrl->i_dq_filt.q = 0.0f;
 
     ctrl->flux_build_time = 0.0f;
 
@@ -70,8 +68,8 @@ void Motor_Init(const Motor_Parameters_t *params, Motor_Control_t *ctrl)
     // Speed PI controller
     // Output is iq_ref (A), so limits are the max torque current
     float iq_limit = params->iq_max;
-    ctrl->speed_controller.Kp = 0.5f;
-    ctrl->speed_controller.Ki = 5.0f;
+    ctrl->speed_controller.Kp = FOC_SPEED_PI_KP;
+    ctrl->speed_controller.Ki = FOC_SPEED_PI_KI;
     ctrl->speed_controller.integral = 0.0f;
     ctrl->speed_controller.out_min = -iq_limit;
     ctrl->speed_controller.out_max = iq_limit;
@@ -178,7 +176,7 @@ static inline void Flux_Slip_Update(Motor_Control_t *control, const Motor_Parame
     // Low-pass filter omega_sl before integration — prevents noisy iq_ref
     // from corrupting theta_e (effect grows with electrical speed)
     control->omega_sl_filt = FOC_OMEGA_SL_LPF_ALPHA * control->omega_sl_filt
-                           + (1.0f - FOC_OMEGA_SL_LPF_ALPHA) * control->omega_sl;
+                          + (1.0f - FOC_OMEGA_SL_LPF_ALPHA) * control->omega_sl;
 
     // theta_sl = theta_sl + omega_sl_filt * Ts
     control->theta_sl = WrapAngle0To2Pi(control->theta_sl + control->omega_sl_filt * params->Ts);
@@ -197,25 +195,31 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
 
     ctrl->theta_m = theta_m;
     ctrl->omega_m = omega_m;
-    ctrl->theta_e = WrapAngle0To2Pi(ctrl->theta_m * (float)params->pole_pairs + ctrl->theta_sl);
 
-    /* Integration-based theta_e: accumulate (omega_m * p + omega_sl_filt) * Ts
-     * Compared to encoder+slip this avoids encoder discretisation noise
-     * but drifts without a reset anchor. Reset at IDLE. */
-    float omega_e_integ = omega_m * (float)params->pole_pairs + ctrl->omega_sl_filt;
-    ctrl->theta_e_integ = WrapAngle0To2Pi(ctrl->theta_e_integ + omega_e_integ * params->Ts);
+    /* Compute electrical angular velocity and integrate to get theta_e for Park.
+     * omega_sl_filt is from the previous cycle (updated later in Flux_Slip_Update),
+     * which is a valid one-sample delay at 20 kHz. */
+    ctrl->omega_e = omega_m * (float)params->pole_pairs + ctrl->omega_sl;
+
+    /* PLL correction: pull the integrator toward the encoder+slip angle
+     * to eliminate drift, while keeping the smoothness of integration.
+     * Error is wrapped to [-pi, pi] to handle the 0/2pi boundary. */
+    float theta_e_encoder = WrapAngle0To2Pi(ctrl->theta_m * (float)params->pole_pairs + ctrl->theta_sl);
+    float theta_err = theta_e_encoder - ctrl->theta_e;
+    if (theta_err >  3.14159265f) theta_err -= 6.28318530f;
+    if (theta_err < -3.14159265f) theta_err += 6.28318530f;
+    ctrl->omega_e += FOC_THETA_CORR_GAIN * theta_err;
+
+    ctrl->theta_e = WrapAngle0To2Pi(ctrl->theta_e + ctrl->omega_e * params->Ts);
+
     clarke = Clarke_Transform(ia, ib);
 
     float sin_theta, cos_theta;
-    pre_calc_sin_cos(ctrl->theta_e_integ, &sin_theta, &cos_theta);
+    pre_calc_sin_cos(ctrl->theta_e, &sin_theta, &cos_theta);
     park = Park_Transform(clarke.alpha, clarke.beta, sin_theta, cos_theta);
     
     ctrl->i_dq = park;
 
-    // Low-pass filter on measured dq currents
-    ctrl->i_dq_filt.d = FOC_CURRENT_LPF_ALPHA * ctrl->i_dq_filt.d + (1.0f - FOC_CURRENT_LPF_ALPHA) * park.d;
-    ctrl->i_dq_filt.q = FOC_CURRENT_LPF_ALPHA * ctrl->i_dq_filt.q + (1.0f - FOC_CURRENT_LPF_ALPHA) * park.q;
-    
     float id_ref = 0.0f, iq_ref = 0.0f;
 
     switch (ctrl->state) {
@@ -232,7 +236,8 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
             ctrl->speed_controller.integral = 0.0f;
             ctrl->omega_ref_ramped = 0.0f;
             ctrl->omega_sl_filt = 0.0f;
-            ctrl->theta_e_integ = 0.0f;
+            ctrl->omega_e = 0.0f;
+            ctrl->theta_e = 0.0f;
 
             ctrl->state = MOTOR_STATE_FLUX_BUILD;
             break;
@@ -266,30 +271,36 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
 
     }
 
-    // Use filtered currents as PI feedback
-    float err_d = id_ref - ctrl->i_dq_filt.d;
-    float err_q = iq_ref - ctrl->i_dq_filt.q;
+    float err_d = id_ref - ctrl->i_dq.d;
+    float err_q = iq_ref - ctrl->i_dq.q;
 
     ctrl->v_dq.d = pi_run(&ctrl->id_controller, err_d, params->Ts);
     ctrl->v_dq.q = pi_run(&ctrl->iq_controller, err_q, params->Ts);
 
-    // Feedforward decoupling using reference currents (avoids noise amplification)
-    float omega_e = (omega_m * (float)params->pole_pairs) + ctrl->omega_sl_filt;
-    ctrl->v_dq.d += -omega_e * params->sigma_Ls * iq_ref;
-    ctrl->v_dq.q +=  omega_e * params->sigma_Ls * id_ref;
+    // Feedforward decoupling — reuse omega_e already computed above
+    ctrl->v_dq.d += -ctrl->omega_e * params->sigma_Ls * iq_ref;
+    ctrl->v_dq.q +=  ctrl->omega_e * params->sigma_Ls * id_ref;
 
     Park_Out_t v_dq = ctrl->v_dq;
 
-    // Voltage vector circle limiter: keep |V| within SVPWM linear region
+    // Voltage limiter with d-axis priority:
+    // Clamp Vd first (guarantees flux current), then use the remaining
+    // circle budget for Vq. This prevents q-axis saturation from
+    // stealing d-axis voltage and collapsing the rotor flux.
     float v_max = vbus * FOC_ONE_BY_SQRT3;
-    float v_mag_sq = v_dq.d * v_dq.d + v_dq.q * v_dq.q;
-    if (v_mag_sq > v_max * v_max) {
-        float scale = v_max / sqrtf(v_mag_sq);
-        v_dq.d *= scale;
-        v_dq.q *= scale;
-    }
+    if (v_dq.d >  v_max) v_dq.d =  v_max;
+    if (v_dq.d < -v_max) v_dq.d = -v_max;
+    float vq_budget = sqrtf(v_max * v_max - v_dq.d * v_dq.d);
+    if (v_dq.q >  vq_budget) v_dq.q =  vq_budget;
+    if (v_dq.q < -vq_budget) v_dq.q = -vq_budget;
 
     Clarke_Out_t valpha_beta = Inv_Park_Transform(v_dq.d, v_dq.q, sin_theta, cos_theta);
+
+    // Electromagnetic torque: Te = (3/2) * p * (Lm/Lr) * psi_r * iq
+    ctrl->torque_e = 1.5f * (float)params->pole_pairs
+                   * (params->Lm / params->Lr)
+                   * ctrl->psi_r
+                   * ctrl->i_dq.q;
 
     svpwm_output = SVPWM_Calculate(valpha_beta.alpha, valpha_beta.beta, vbus);
 

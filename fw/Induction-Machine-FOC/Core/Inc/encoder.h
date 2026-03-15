@@ -8,6 +8,11 @@
 // Set to -1 to invert encoder direction, +1 for normal.
 #define ENCODER_DIR_SIGN (1)
 
+// Velocity LPF alpha: e^(-2*pi*f_c*Ts)
+// 20 Hz cutoff at 20 kHz: alpha = e^(-2*pi*20*50e-6) = 0.9937
+// Smooths quantized delta-count velocity before use in speed PI and feedforward.
+#define ENCODER_SPEED_LPF_ALPHA (0.9937f)
+
 typedef struct {
   TIM_HandleTypeDef *htim;
   uint32_t ppr;
