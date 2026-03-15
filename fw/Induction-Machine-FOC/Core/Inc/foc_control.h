@@ -79,8 +79,15 @@ typedef struct {
     // Torque
     float torque_e;         // Estimated electromagnetic torque (N·m)
 
-    // Flux estimator ( rotor flux angle estimation i d-axis)
-    float psi_r;        // Rotor flux magnitude (Wb)
+    // Flux & magnetising current
+    float psi_r;            // Rotor flux magnitude (Wb)
+    float imr;              // Magnetising current = psi_r / Lm (A)
+
+    // Feedforward dataset fields
+    float iq_pi_out;        // Speed PI output = iq_ref commanded to the current loop (A)
+    float omega_m_prev;     // Previous-cycle omega_m for dwr_dt computation (rad/s)
+    float dwr_dt;           // Filtered mechanical acceleration (rad/s²) — NN input
+    float iq_ff;            // NN-predicted feedforward iq (A); added to speed PI output
 
     // Current feedback in dq
     Park_Out_t i_dq;      // Raw measured d and q axis currents (A)

@@ -1,4 +1,5 @@
 #include "foc_control.h"
+#include "nn_iq_ff.h"
 #include "sine_op.h"
 #include "foc_math.h"
 #include <math.h>
@@ -11,6 +12,10 @@
 #include "main.h"
 #include "stdio.h"
 #include "encoder.h"
+
+
+#include "network.h"
+#include "network_data.h"
 
 extern ADC_HandleTypeDef hadc2;
 extern TIM_HandleTypeDef htim1;
@@ -196,6 +201,14 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
     ctrl->theta_m = theta_m;
     ctrl->omega_m = omega_m;
 
+    /* Mechanical acceleration (NN input): filtered derivative of omega_m.
+     * Raw dw/dt at 20kHz is quantisation-noisy; 10Hz LPF (alpha=0.9969) gives
+     * a clean trend suitable for inertia-torque identification.
+     * Physics: iq_ff = (J/Kt)*dw_dt + friction(omega) — label is iq_meas. */
+    float dwr_raw = (omega_m - ctrl->omega_m_prev) / params->Ts;
+    ctrl->omega_m_prev = omega_m;
+    ctrl->dwr_dt = 0.9969f * ctrl->dwr_dt + 0.0031f * dwr_raw;  // 10 Hz @ 20 kHz
+
     /* Compute electrical angular velocity and integrate to get theta_e for Park.
      * omega_sl_filt is from the previous cycle (updated later in Flux_Slip_Update),
      * which is a valid one-sample delay at 20 kHz. */
@@ -265,6 +278,22 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
             // Outer speed PI: error → iq_ref
             float speed_err = ctrl->omega_ref_ramped - omega_m;
             iq_ref = pi_run(&ctrl->speed_controller, speed_err, params->Ts);
+            ctrl->iq_pi_out = iq_ref;
+
+            /* NN feedforward — updated at 100 Hz (every 200 FOC cycles).
+             * dwr_dt is 10-Hz LPF filtered, so no new information above 100 Hz.
+             * Clamped to ±iq_max/2 so the PI can always correct residuals. */
+            static uint16_t nn_cnt = 0;
+            if (++nn_cnt >= 200U) {
+                nn_cnt = 0U;
+                float ff = NN_IqFF_Run(omega_m, ctrl->omega_ref_ramped, ctrl->dwr_dt, ctrl->imr);
+                if (ff >  params->iq_max * 0.5f) ff =  params->iq_max * 0.5f;
+                if (ff < -params->iq_max * 0.5f) ff = -params->iq_max * 0.5f;
+                ctrl->iq_ff = ff;
+            }
+            //iq_ref += ctrl->iq_ff;
+            //if (iq_ref >  params->iq_max) iq_ref =  params->iq_max;
+            //if (iq_ref < -params->iq_max) iq_ref = -params->iq_max;
 
             Flux_Slip_Update(ctrl, params, id_ref, iq_ref);
             break;
@@ -278,8 +307,8 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
     ctrl->v_dq.q = pi_run(&ctrl->iq_controller, err_q, params->Ts);
 
     // Feedforward decoupling — reuse omega_e already computed above
-    ctrl->v_dq.d += -ctrl->omega_e * params->sigma_Ls * iq_ref;
-    ctrl->v_dq.q +=  ctrl->omega_e * params->sigma_Ls * id_ref;
+    // ctrl->v_dq.d += -ctrl->omega_e * params->sigma_Ls * iq_ref;
+    // ctrl->v_dq.q +=  ctrl->omega_e * params->sigma_Ls * id_ref;
 
     Park_Out_t v_dq = ctrl->v_dq;
 
@@ -301,6 +330,9 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
                    * (params->Lm / params->Lr)
                    * ctrl->psi_r
                    * ctrl->i_dq.q;
+
+    // Magnetising current (NN input): imr = psi_r / Lm
+    ctrl->imr = ctrl->psi_r / params->Lm;
 
     svpwm_output = SVPWM_Calculate(valpha_beta.alpha, valpha_beta.beta, vbus);
 

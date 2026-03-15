@@ -40,17 +40,19 @@
 #define ERR_BAD_CRC             0x03
 #define ERR_INVALID_VALUE       0x04
 
-/* -------- Telemetry Packet (36 bytes) -------- */
+/* -------- Telemetry Packet (40 bytes) -------- */
 typedef struct {
     float id;             // d-axis current (A)
-    float iq;             // q-axis current (A)
+    float iq;             // q-axis current (A)        [NN label]
     float vbus;           // DC bus voltage (V)
-    float omega_m;        // Mechanical speed (RPM)
+    float omega_m;        // Mechanical speed (rad/s)  [NN input]
     float ia;             // Phase A current (A)
     float ib;             // Phase B current (A)
     float ic;             // Phase C current (A)
     float theta_e;        // Electrical angle — integrated omega_e (rad)
     float torque_e;       // Estimated electromagnetic torque (N·m)
+    float imr;            // Magnetising current = psi_r / Lm (A) [NN input]
+    float dwr_dt;         // Mechanical acceleration (rad/s²)      [NN input]
 } __attribute__((packed)) Telemetry_Packet_t;
 
 /* -------- Status Packet (16 bytes) -------- */

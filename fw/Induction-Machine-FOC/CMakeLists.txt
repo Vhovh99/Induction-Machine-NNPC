@@ -29,7 +29,7 @@ set(CMAKE_PROJECT_NAME Induction-Machine-FOC)
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 
 # Core project settings
-project(${CMAKE_PROJECT_NAME})
+project(${CMAKE_PROJECT_NAME} LANGUAGES C ASM)
 message("Build type: " ${CMAKE_BUILD_TYPE})
 
 # Enable CMake support for ASM and C languages
@@ -58,13 +58,15 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/foc_control.c
     Core/Src/digital_filter.c
     Core/Src/serial_protocol.c
+    Core/Src/nn_iq_ff.c
 )
 
 set(CMAKE_C_LINK_FLAGS "${CMAKE_C_LINK_FLAGS} -u _printf_float")
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user defined include paths
+    # X-CUBE-AI runtime headers (from installed STM32Cube pack)
+    $ENV{HOME}/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/10.2.0/Utilities/linux/targets/common/EmbedNets/tools/inspector/workspace/include
 )
 
 # Add project symbols (macros)

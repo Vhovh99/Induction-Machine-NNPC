@@ -35,6 +35,7 @@
 #include "foc_math.h"
 #include "current_sense.h"
 #include "serial_protocol.h"
+#include "nn_iq_ff.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -138,13 +139,16 @@ void send_telemetry(void) {
                 telem.ia       = currents.Ia;
                 telem.ib       = currents.Ib;
                 telem.ic       = currents.Ic;
-                telem.theta_e  = motor_control.theta_e;
-                telem.torque_e = motor_control.torque_e;
+                telem.theta_e     = motor_control.theta_e;
+                telem.torque_e    = motor_control.torque_e;
+                telem.imr         = motor_control.imr;
+                telem.dwr_dt      = motor_control.dwr_dt;
             } else {
                 telem.id = telem.iq = 0.0f;
                 telem.omega_m = 0.0f;
                 telem.ia = telem.ib = telem.ic = 0.0f;
                 telem.theta_e = telem.torque_e = 0.0f;
+                telem.imr = telem.dwr_dt = 0.0f;
             }
             telem.vbus = currents.Vbus;
             Proto_SendTelemetry(&proto, &telem);
@@ -282,6 +286,8 @@ int main(void)
   Encoder_Start(&encoder);
 
   Motor_Init(&motor_params, &motor_control);
+
+  NN_IqFF_Init();
 
   // PWM_START();
 
