@@ -1,8 +1,7 @@
 import numpy as np
 from collections import deque
 from typing import Optional
-from config import BUFFER_SIZE
-import time
+from config import BUFFER_SIZE, PWM_FREQUENCY, TELEMETRY_DIV_DEFAULT
 
 
 class TelemetryBuffer:
@@ -27,11 +26,17 @@ class TelemetryBuffer:
         self.speed_references = deque(maxlen=buffer_size)
         self.reference_speed = 0.0  # rad/s
 
+        # Monotonic sample counter — avoids batched-read timestamp artifact:
+        # multiple packets received in the same serial.read() call would all get
+        # identical time.time() values, causing vertical spikes in the plot.
+        self._sample_idx = 0
+        self._sample_period = TELEMETRY_DIV_DEFAULT / PWM_FREQUENCY  # seconds per sample
+
     def add_telemetry(self, id_val: float, iq_val: float, vbus: float,
                       omega_m: float, ia: float, ib: float, ic: float,
                       theta_e: float = 0.0, theta_e_integ: float = 0.0):
-        current_time = time.time()
-        self.timestamps.append(current_time)
+        self.timestamps.append(self._sample_idx)
+        self._sample_idx += 1
         self.id_currents.append(id_val)
         self.iq_currents.append(iq_val)
         self.vbus_values.append(vbus)
@@ -42,6 +47,11 @@ class TelemetryBuffer:
         self.theta_e_values.append(theta_e)
         self.theta_e_integ_values.append(theta_e_integ)
         self.speed_references.append(self.reference_speed)
+
+    def set_telemetry_divider(self, divider: int):
+        """Update the expected sample period when the telemetry divider changes."""
+        if divider > 0:
+            self._sample_period = divider / PWM_FREQUENCY
 
     def set_speed_reference(self, omega_ref: float):
         self.reference_speed = omega_ref
@@ -63,8 +73,8 @@ class TelemetryBuffer:
                 'theta_e_integ': empty,
             }
 
-        time_array = np.array(list(self.timestamps))
-        time_relative = time_array - time_array[0]
+        indices = np.array(list(self.timestamps))
+        time_relative = (indices - indices[0]) * self._sample_period
 
         return {
             'time': time_relative,
@@ -101,6 +111,7 @@ class TelemetryBuffer:
 
     def clear(self):
         self.timestamps.clear()
+        self._sample_idx = 0
         self.id_currents.clear()
         self.iq_currents.clear()
         self.vbus_values.clear()

@@ -411,6 +411,7 @@ class MotorControlUI(QMainWindow):
     def _set_telemetry_div(self):
         val = self.telem_div_spin.value()
         if self.serial_comm.set_telemetry_div(val):
+            self.data_buffer.set_telemetry_divider(val)
             msg = f"Telemetry divider set to {val}" if val > 0 else "Telemetry disabled"
             self._add_log_message(msg)
         else:
