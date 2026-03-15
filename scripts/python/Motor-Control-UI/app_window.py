@@ -161,20 +161,20 @@ class MotorControlUI(QMainWindow):
         group = QGroupBox("Motor Control")
         layout = QFormLayout()
         
-        # Speed reference (rad/s)
+        # Speed reference (RPM) — firmware converts to rad/s internally
         self.speed_ref_spin = QDoubleSpinBox()
         self.speed_ref_spin.setMinimum(SPEED_REF_MIN)
         self.speed_ref_spin.setMaximum(SPEED_REF_MAX)
         self.speed_ref_spin.setValue(SPEED_REF_DEFAULT)
-        self.speed_ref_spin.setSuffix(" rad/s")
-        self.speed_ref_spin.setSingleStep(1.0)
-        self.speed_ref_spin.setDecimals(2)
+        self.speed_ref_spin.setSuffix(" RPM")
+        self.speed_ref_spin.setSingleStep(10.0)
+        self.speed_ref_spin.setDecimals(0)
         speed_apply = QPushButton("Set")
         speed_apply.clicked.connect(self._set_speed_ref)
         speed_layout = QHBoxLayout()
         speed_layout.addWidget(self.speed_ref_spin)
         speed_layout.addWidget(speed_apply)
-        layout.addRow("Speed Ref:", speed_layout)
+        layout.addRow("Speed Ref (RPM):", speed_layout)
         
         # Id reference (A)
         self.id_ref_spin = QDoubleSpinBox()
@@ -273,7 +273,7 @@ class MotorControlUI(QMainWindow):
         group = QGroupBox("Live Telemetry")
         layout = QFormLayout()
         
-        self.speed_label = QLabel("0.00 rad/s")
+        self.speed_label = QLabel("0.0 RPM")
         self.speed_label.setFont(QFont("Arial", 10, QFont.Bold))
         layout.addRow("Speed (omega_m):", self.speed_label)
         
@@ -335,7 +335,7 @@ class MotorControlUI(QMainWindow):
         layout = QVBoxLayout(panel)
         tabs = QTabWidget()
         
-        self.speed_canvas,   self.speed_ax   = self._make_plot_tab(tabs, "Speed (rad/s)")
+        self.speed_canvas,   self.speed_ax   = self._make_plot_tab(tabs, "Speed (RPM)")
         self.park_canvas,    self.park_ax    = self._make_plot_tab(tabs, "Park Currents (A)")
         self.current_canvas, self.current_ax = self._make_plot_tab(tabs, "Phase Currents (A)")
         self.vbus_canvas,    self.vbus_ax    = self._make_plot_tab(tabs, "Bus Voltage (V)")
@@ -397,7 +397,7 @@ class MotorControlUI(QMainWindow):
         val = self.speed_ref_spin.value()
         if self.serial_comm.set_speed_ref(val):
             self.data_buffer.set_speed_reference(val)
-            self._add_log_message(f"Speed ref set to {val:.2f} rad/s")
+            self._add_log_message(f"Speed ref set to {val:.0f} RPM")
         else:
             self._add_log_message("ERROR: Failed to set speed ref")
     
@@ -487,7 +487,8 @@ class MotorControlUI(QMainWindow):
     
     def _update_status_display(self, data: dict):
         latest = self.data_buffer.get_latest_values()
-        self.speed_label.setText(f"{latest['omega_m']:.2f} rad/s")
+        omega_rpm = latest['omega_m'] * 60.0 / (2.0 * 3.141592653589793)
+        self.speed_label.setText(f"{omega_rpm:.1f} RPM")
         self.id_label.setText(f"Id: {latest['id']:.3f} A")
         self.iq_label.setText(f"Iq: {latest['iq']:.3f} A")
         self.vbus_label.setText(f"{latest['vbus']:.2f} V")
@@ -527,10 +528,11 @@ class MotorControlUI(QMainWindow):
         view = self._save_view(self.speed_ax)
         self.speed_ax.clear()
         t = data['time']
-        self.speed_ax.plot(t, data['omega_m'], 'b-', label='Actual', linewidth=1.5)
+        omega_rpm = data['omega_m'] * 60.0 / (2.0 * 3.141592653589793)
+        self.speed_ax.plot(t, omega_rpm, 'b-', label='Actual', linewidth=1.5)
         self.speed_ax.plot(t, data['speed_reference'], 'r--', label='Reference', linewidth=1.5)
         self.speed_ax.set_xlabel('Time (s)')
-        self.speed_ax.set_ylabel('Speed (rad/s)')
+        self.speed_ax.set_ylabel('Speed (RPM)')
         self.speed_ax.set_title('Mechanical Speed')
         self.speed_ax.legend(loc='best')
         self.speed_ax.grid(True, alpha=0.3)

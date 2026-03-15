@@ -12,9 +12,9 @@ WINDOW_WIDTH = 1400
 WINDOW_HEIGHT = 900
 REFRESH_RATE = 50  # milliseconds
 
-# Speed Reference Limits (rad/s)
-SPEED_REF_MIN = -500.0
-SPEED_REF_MAX = 500.0
+# Speed Reference Limits (RPM) — firmware converts RPM to rad/s internally
+SPEED_REF_MIN = -5000.0
+SPEED_REF_MAX = 5000.0
 SPEED_REF_DEFAULT = 0.0
 
 # Id Reference Limits (A)
@@ -29,7 +29,7 @@ TELEMETRY_DIV_DEFAULT = 200  # firmware default
 
 # Motor Parameters (for display conversions)
 MOTOR_POLE_PAIRS = 2
-PWM_FREQUENCY = 40000  # Hz — firmware PWM/ISR frequency
+PWM_FREQUENCY = 20000  # Hz — firmware PWM/ISR frequency
 
 # Plotting
 PLOT_LINE_WIDTH = 1.5
