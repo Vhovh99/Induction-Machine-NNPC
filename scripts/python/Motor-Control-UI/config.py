@@ -13,14 +13,14 @@ WINDOW_HEIGHT = 900
 REFRESH_RATE = 50  # milliseconds
 
 # Speed Reference Limits (RPM) — firmware converts RPM to rad/s internally
-SPEED_REF_MIN = -5000.0
-SPEED_REF_MAX = 5000.0
-SPEED_REF_DEFAULT = 0.0
+SPEED_REF_MIN = -2000.0
+SPEED_REF_MAX = 2000.0
+SPEED_REF_DEFAULT = 500.0
 
 # Id Reference Limits (A)
 ID_REF_MIN = -10.0
 ID_REF_MAX = 10.0
-ID_REF_DEFAULT = 0.4  # firmware default
+ID_REF_DEFAULT = 1.13  # firmware default
 
 # Telemetry Divider
 TELEMETRY_DIV_MIN = 0
