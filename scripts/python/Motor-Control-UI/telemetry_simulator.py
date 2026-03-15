@@ -2,7 +2,7 @@
 Motor telemetry simulator for development and testing.
 
 Generates simulated telemetry matching the firmware binary protocol
-telemetry packet: id, iq, vbus, omega_m, ia, ib, ic, theta_e, torque_e.
+telemetry packet: id, iq, vbus, omega_m, ia, ib, ic, theta_e, torque_e, imr, dwr_dt.
 """
 
 import time
@@ -59,6 +59,8 @@ class TelemetrySimulator:
         ic = cur_mag * math.sin(self.phase + 4.189)
         theta_e = math.fmod(self.phase * 2.0, 2.0 * math.pi)
         torque_e = iq_val * 1.5  # simplified torque estimate (N·m)
+        imr = self.id_ref * 0.9  # simplified magnetising current
+        dwr_dt = (self.speed_ref - self.omega_m) / self.tau  # acceleration estimate
 
         return {
             'id': id_val,
@@ -70,5 +72,7 @@ class TelemetrySimulator:
             'ic': ic,
             'theta_e': theta_e,
             'torque_e': torque_e,
+            'imr': imr,
+            'dwr_dt': dwr_dt,
             'timestamp': now,
         }

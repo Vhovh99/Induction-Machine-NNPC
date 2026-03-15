@@ -233,9 +233,9 @@ class SerialCommunicator:
             if self.on_nack_received:
                 self.on_nack_received(payload[0], payload[1])
 
-        elif cmd == RSP_TELEMETRY and len(payload) == 36:
-            # id(f), iq(f), vbus(f), omega_m(f/rad/s), ia(f), ib(f), ic(f), theta_e(f), torque_e(f)
-            vals = struct.unpack('<fffffffff', payload)
+        elif cmd == RSP_TELEMETRY and len(payload) == 44:
+            # id(f), iq(f), vbus(f), omega_m(f), ia(f), ib(f), ic(f), theta_e(f), torque_e(f), imr(f), dwr_dt(f)
+            vals = struct.unpack('<fffffffffff', payload)
             data = {
                 'id': vals[0],
                 'iq': vals[1],
@@ -246,6 +246,8 @@ class SerialCommunicator:
                 'ic': vals[6],
                 'theta_e': vals[7],
                 'torque_e': vals[8],
+                'imr': vals[9],
+                'dwr_dt': vals[10],
                 'timestamp': time.time(),
             }
             if self.on_data_received:

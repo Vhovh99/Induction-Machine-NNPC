@@ -280,9 +280,11 @@ class MockMotorController:
         ic = cur_mag * math.sin(self.phase + 4.189)
         theta_e = math.fmod(self.phase * 2.0, 2.0 * math.pi)
         torque_e = iq_val * 1.5  # simplified torque estimate (N·m)
+        imr = self.id_ref * 0.9  # simplified magnetising current
+        dwr_dt = (self.speed_ref - self.omega_m) / self.tau  # acceleration estimate
 
-        payload = struct.pack('<fffffffff', id_val, iq_val, vbus,
-                              self.omega_m, ia, ib, ic, theta_e, torque_e)
+        payload = struct.pack('<fffffffffff', id_val, iq_val, vbus,
+                              self.omega_m, ia, ib, ic, theta_e, torque_e, imr, dwr_dt)
         self._send(build_frame(RSP_TELEMETRY, payload))
 
 

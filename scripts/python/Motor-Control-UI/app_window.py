@@ -1,10 +1,13 @@
 import sys
 import time
+import csv
+import os
 
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QPushButton, QLabel, QSpinBox, QDoubleSpinBox, QComboBox,
-    QTextEdit, QTabWidget, QGroupBox, QFormLayout, QStatusBar
+    QTextEdit, QTabWidget, QGroupBox, QFormLayout, QStatusBar,
+    QLineEdit, QFileDialog
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt5.QtGui import QFont, QColor
@@ -88,6 +91,12 @@ class MotorControlUI(QMainWindow):
         
         self.data_buffer = TelemetryBuffer()
         
+        # CSV logging state
+        self._csv_file = None
+        self._csv_writer = None
+        self._csv_logging = False
+        self._csv_sample_count = 0
+        
         # UI state
         self.connected = False
         self.motor_running = False
@@ -122,6 +131,7 @@ class MotorControlUI(QMainWindow):
         layout.addWidget(self._create_motor_control_group())
         layout.addWidget(self._create_foc_control_group())
         layout.addWidget(self._create_status_group())
+        layout.addWidget(self._create_csv_group())
         layout.addWidget(self._create_log_group())
         
         layout.addStretch()
@@ -305,6 +315,70 @@ class MotorControlUI(QMainWindow):
         group.setLayout(layout)
         return group
     
+    def _create_csv_group(self) -> QGroupBox:
+        group = QGroupBox("NN Data Logger")
+        layout = QVBoxLayout()
+
+        # File path row
+        path_layout = QHBoxLayout()
+        self.csv_path_edit = QLineEdit("nn_training_data.csv")
+        browse_btn = QPushButton("Browse...")
+        browse_btn.clicked.connect(self._csv_browse)
+        path_layout.addWidget(self.csv_path_edit)
+        path_layout.addWidget(browse_btn)
+        layout.addLayout(path_layout)
+
+        # Start/Stop and sample counter
+        ctrl_layout = QHBoxLayout()
+        self.csv_start_btn = QPushButton("Start Logging")
+        self.csv_start_btn.clicked.connect(self._csv_start)
+        self.csv_stop_btn = QPushButton("Stop Logging")
+        self.csv_stop_btn.clicked.connect(self._csv_stop)
+        self.csv_stop_btn.setEnabled(False)
+        self.csv_count_label = QLabel("0 samples")
+        ctrl_layout.addWidget(self.csv_start_btn)
+        ctrl_layout.addWidget(self.csv_stop_btn)
+        ctrl_layout.addWidget(self.csv_count_label)
+        layout.addLayout(ctrl_layout)
+
+        group.setLayout(layout)
+        return group
+
+    def _csv_browse(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save CSV", self.csv_path_edit.text(),
+            "CSV Files (*.csv);;All Files (*)"
+        )
+        if path:
+            self.csv_path_edit.setText(path)
+
+    def _csv_start(self):
+        path = self.csv_path_edit.text().strip()
+        if not path:
+            self._add_log_message("ERROR: No CSV file path specified")
+            return
+        try:
+            self._csv_file = open(path, 'w', newline='', encoding='utf-8')
+            self._csv_writer = csv.writer(self._csv_file)
+            self._csv_writer.writerow(['iq', 'omega_m', 'omega_m_ref', 'imr', 'dwr_dt'])
+            self._csv_logging = True
+            self._csv_sample_count = 0
+            self.csv_start_btn.setEnabled(False)
+            self.csv_stop_btn.setEnabled(True)
+            self._add_log_message(f"CSV logging started: {path}")
+        except Exception as e:
+            self._add_log_message(f"ERROR: Cannot open CSV file: {e}")
+
+    def _csv_stop(self):
+        self._csv_logging = False
+        if self._csv_file:
+            self._csv_file.close()
+            self._csv_file = None
+            self._csv_writer = None
+        self.csv_start_btn.setEnabled(True)
+        self.csv_stop_btn.setEnabled(False)
+        self._add_log_message(f"CSV logging stopped. {self._csv_sample_count} samples saved.")
+
     def _create_log_group(self) -> QGroupBox:
         group = QGroupBox("Messages")
         layout = QVBoxLayout()
@@ -472,7 +546,21 @@ class MotorControlUI(QMainWindow):
             data['id'], data['iq'], data['vbus'],
             data['omega_m'], data['ia'], data['ib'], data['ic'],
             data.get('theta_e', 0.0), data.get('torque_e', 0.0),
+            data.get('imr', 0.0), data.get('dwr_dt', 0.0),
         )
+        # Write to CSV if logging — omega_m_ref converted from RPM to rad/s
+        if self._csv_logging and self._csv_writer is not None:
+            import math
+            omega_m_ref_rads = self.data_buffer.reference_speed * math.pi / 30.0
+            self._csv_writer.writerow([
+                f"{data['iq']:.6f}",
+                f"{data['omega_m']:.6f}",
+                f"{omega_m_ref_rads:.6f}",
+                f"{data.get('imr', 0.0):.6f}",
+                f"{data.get('dwr_dt', 0.0):.6f}",
+            ])
+            self._csv_sample_count += 1
+            self.csv_count_label.setText(f"{self._csv_sample_count} samples")
         self._update_status_display(data)
     
     def _on_status_received(self, status: dict):
@@ -622,6 +710,8 @@ class MotorControlUI(QMainWindow):
         )
     
     def closeEvent(self, event):
+        if self._csv_logging:
+            self._csv_stop()
         if self.connected:
             self.serial_comm.disconnect()
         event.accept()
