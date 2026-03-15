@@ -46,7 +46,7 @@ class IqFFNet(nn.Module):
         layers = []
         prev = n_in
         for h in hidden:
-            layers += [nn.Linear(prev, h), nn.ReLU()]
+            layers += [nn.Linear(prev, h), nn.ELU()]
             prev = h
         layers.append(nn.Linear(prev, 1))
         self.net = nn.Sequential(*layers)
@@ -103,7 +103,7 @@ def export_keras_tflite():
     x = inputs
     layer_idx = 0
     for h in HIDDEN:
-        x = tf.keras.layers.Dense(h, activation="relu", name=f"dense_{layer_idx}")(x)
+        x = tf.keras.layers.Dense(h, activation="elu", name=f"dense_{layer_idx}")(x)
         layer_idx += 1
     outputs = tf.keras.layers.Dense(1, activation="linear", name="iq_ff")(x)
     keras_model = tf.keras.Model(inputs, outputs)
@@ -158,16 +158,21 @@ def export_keras_tflite():
 
     # ── TFLite INT8 full-integer quantisation ───────────────────────────────
     print("\n── Step 4: Keras → TFLite INT8 (full-integer) ──")
-    # Representative dataset: use normalised inputs (same scaler as training)
-    scaler_mean = np.array(meta["scaler_X_center"], dtype=np.float32)
-    scaler_std  = np.array(meta["scaler_X_scale"],  dtype=np.float32)
+    # Support both StandardScaler and RobustScaler key names.
+    _scaler_type = meta.get("scaler_X_type", "StandardScaler")
+    if _scaler_type == "RobustScaler":
+        scaler_center = np.array(meta["scaler_X_center"], dtype=np.float32)
+        scaler_scale  = np.array(meta["scaler_X_scale"],  dtype=np.float32)
+    else:
+        scaler_center = np.array(meta["scaler_X_mean"], dtype=np.float32)
+        scaler_scale  = np.array(meta["scaler_X_std"],  dtype=np.float32)
 
     def representative_dataset():
-        # The Keras/TFLite model always receives NORMALISED inputs.
-        # Simulate the RobustScaler output: approximately N(0,1) in bulk,
-        # with heavier tails (especially for dwr_dt).
+        # The Keras/TFLite model always receives NORMALISED inputs
+        # (StandardScaler is applied in firmware before calling the network).
+        # Feed N(0,1) samples — representative of the normalised input range.
         rng2 = np.random.default_rng(1)
-        for _ in range(500):
+        for _ in range(200):
             z = rng2.standard_normal((1, N_IN)).astype(np.float32)
             yield [z]
 
@@ -210,9 +215,6 @@ def export_keras_tflite():
     print(f"  Input  scale={in_scale:.6f}  zero_point={in_zero}")
     print(f"  Output scale={out_scale:.6f}  zero_point={out_zero}")
 
-    scaler_center = meta["scaler_X_center"]
-    scaler_scale  = meta["scaler_X_scale"]
-
     return keras_model
 
 
@@ -220,8 +222,6 @@ def export_keras_tflite():
 # 3.  Print STM32Cube.AI instructions
 # ═══════════════════════════════════════════════════════════════════════════════
 def print_stm32_instructions():
-    scaler_center = meta["scaler_X_center"]
-    scaler_scale  = meta["scaler_X_scale"]
     print("""
 ══════════════════════════════════════════════════════════════
   STM32Cube.AI  (X-CUBE-AI)  import instructions
@@ -242,16 +242,14 @@ Option C – TFLite INT8  [smallest flash footprint]
   → Framework: TFLite
 
 ──────────────────────────────────────────────────────────────
-  Pre-processing (RobustScaler — values from model/iq_ff_meta.json):
+  Pre-processing (must be done in MCU firmware before calling
+  the network — values from model/iq_ff_meta.json):
 
-    center = {center}   (median)
-    scale  = {scale}    (IQR)
+    scaler_center = {center}
+    scaler_scale  = {scale}
 
   For float32 (ONNX / Keras / TFLite-f32):
-    input[0] = (omega_m      - center[0]) / scale[0]
-    input[1] = (omega_m_ref  - center[1]) / scale[1]
-    input[2] = (dwr_dt       - center[2]) / scale[2]
-    input[3] = (imr          - center[3]) / scale[3]
+    input[i] = (x[i] - center[i]) / scale[i]
 
   For INT8 (TFLite-int8):
     input[i] = (int8_t)round( (x_norm[i] / in_scale) + in_zero )
@@ -266,8 +264,8 @@ Option C – TFLite INT8  [smallest flash footprint]
   Input column order in the network:  {cols}
 ══════════════════════════════════════════════════════════════
 """.format(
-        center=scaler_center,
-        scale=scaler_scale,
+        center=meta.get("scaler_X_center", meta.get("scaler_X_mean")),
+        scale=meta.get("scaler_X_scale",  meta.get("scaler_X_std")),
         cols=meta["input_cols"],
     ))
 

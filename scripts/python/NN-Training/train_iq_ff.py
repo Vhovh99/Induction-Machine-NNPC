@@ -25,7 +25,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
-from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 # ── Reproducibility ────────────────────────────────────────────────────────────
@@ -37,13 +37,20 @@ torch.manual_seed(SEED)
 # ── Config ─────────────────────────────────────────────────────────────────────
 DATA_FILE   = "nn_training_data.csv"
 MODEL_DIR   = "model"
-EPOCHS      = 800
+EPOCHS      = 1000
 BATCH_SIZE  = 256
-LR          = 1e-3
+LR          = 1e-2         # higher LR needed for tanh to converge in ~1000 epochs
 PATIENCE    = 60          # early-stopping patience (epochs without val improvement)
 VAL_SPLIT   = 0.15
 TEST_SPLIT  = 0.10
-HIDDEN      = [128, 128, 64, 32]  # hidden layer sizes
+HIDDEN      = [16, 8]          # 4 → 8 → 1  (tiny, MCU-friendly)
+
+# Noise filter: rows where |dwr_dt| exceeds this threshold are discarded.
+# The raw signal is a numerical derivative of omega_m and contains large
+# transient spikes (p99 ≈ ±245 rad/s²; extremes reach ±6350 rad/s²).
+# 500 rad/s² keeps >99% of the data while removing differentiation artefacts.
+# Set to None to disable filtering.
+DWR_DT_CLIP = 150.0   # rad/s²
 
 # Physics-motivated inputs (see module docstring)
 # omega_m_ref added: gives the NN the speed error context so it can
@@ -57,6 +64,14 @@ def load_csv(path):
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
         rows = [row for row in reader]
+
+    if DWR_DT_CLIP is not None:
+        before = len(rows)
+        rows = [r for r in rows if abs(float(r["dwr_dt"])) <= DWR_DT_CLIP]
+        dropped = before - len(rows)
+        print(f"  dwr_dt filter |dwr_dt| ≤ {DWR_DT_CLIP}: "
+              f"kept {len(rows)}/{before} rows, dropped {dropped} ({100*dropped/before:.1f}%)")
+
     X = np.array([[float(r[c]) for c in INPUT_COLS] for r in rows], dtype=np.float32)
     y = np.array([float(r[TARGET_COL]) for r in rows], dtype=np.float32).reshape(-1, 1)
     return X, y
@@ -79,17 +94,16 @@ def split(X, y, val_frac, test_frac, seed=SEED):
 # ── 3. Model ───────────────────────────────────────────────────────────────────
 class IqFFNet(nn.Module):
     """
-    Fully-connected network with ReLU activations.
-    ReLU is used for maximum STM32 TFLite RT compatibility (ELU is not in
-    every target's kernel set). Performance is nearly identical for this
-    smooth physics regression.
+    Compact MLP with Tanh activations: 4 → 8 → 1.
+    Tanh is bounded [-1, 1], numerically safe on fixed-point MCUs, and
+    matches the smooth, monotone physics of the mechanical equation.
     """
     def __init__(self, n_in: int, hidden: list[int]):
         super().__init__()
         layers = []
         prev = n_in
         for h in hidden:
-            layers += [nn.Linear(prev, h), nn.ReLU()]
+            layers += [nn.Linear(prev, h), nn.Tanh()]
             prev = h
         layers.append(nn.Linear(prev, 1))   # linear output (regression)
         self.net = nn.Sequential(*layers)
@@ -135,9 +149,7 @@ def main():
     print(f"  Train/Val/Test: {len(X_train)} / {len(X_val)} / {len(X_test)}")
 
     # --- Normalise (fit on train only, to prevent data leakage) ---
-    # RobustScaler on X: uses median+IQR so dwr_dt outliers (up to -87σ) don't
-    # distort the scale of the other inputs. StandardScaler on y is fine.
-    scaler_X = RobustScaler().fit(X_train)
+    scaler_X = StandardScaler().fit(X_train)
     scaler_y = StandardScaler().fit(y_train)
 
     def scale(Xr, yr):
@@ -156,7 +168,7 @@ def main():
     model     = IqFFNet(n_in=len(INPUT_COLS), hidden=HIDDEN)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, factor=0.5, patience=15, min_lr=1e-6)
+        optimizer, factor=0.5, patience=10, min_lr=1e-6)
     criterion = nn.MSELoss()
 
     print(f"\nModel: {model}")
@@ -212,17 +224,16 @@ def main():
 
     # --- Save scaler params and model meta (for embedded / C export) ---
     meta = {
-        "input_cols"      : INPUT_COLS,
-        "target_col"      : TARGET_COL,
-        "hidden_layers"   : HIDDEN,
-        "scaler_X_type"   : "RobustScaler",
-        "scaler_X_center" : scaler_X.center_.tolist(),   # median
-        "scaler_X_scale"  : scaler_X.scale_.tolist(),    # IQR
-        "scaler_y_mean"   : scaler_y.mean_.tolist(),
-        "scaler_y_std"    : scaler_y.scale_.tolist(),
-        "test_mae_A"      : mae,
-        "test_rmse_A"     : rmse,
-        "test_r2"         : r2,
+        "input_cols"   : INPUT_COLS,
+        "target_col"   : TARGET_COL,
+        "hidden_layers": HIDDEN,
+        "scaler_X_mean": scaler_X.mean_.tolist(),
+        "scaler_X_std" : scaler_X.scale_.tolist(),
+        "scaler_y_mean": scaler_y.mean_.tolist(),
+        "scaler_y_std" : scaler_y.scale_.tolist(),
+        "test_mae_A"   : mae,
+        "test_rmse_A"  : rmse,
+        "test_r2"      : r2,
     }
     meta_path = os.path.join(MODEL_DIR, "iq_ff_meta.json")
     with open(meta_path, "w") as f:
