@@ -14,8 +14,6 @@
 #include "encoder.h"
 
 
-#include "network.h"
-#include "network_data.h"
 
 extern ADC_HandleTypeDef hadc2;
 extern TIM_HandleTypeDef htim1;
@@ -38,7 +36,6 @@ void Motor_Init(const Motor_Parameters_t *params, Motor_Control_t *ctrl)
     ctrl->state = MOTOR_STATE_IDLE;
     ctrl->theta_sl = 0.0f;
     ctrl->omega_sl = 0.0f;
-    ctrl->omega_sl_filt = 0.0f;
     ctrl->omega_e = 0.0f;
     ctrl->theta_e = 0.0f;
 
@@ -178,13 +175,8 @@ static inline void Flux_Slip_Update(Motor_Control_t *control, const Motor_Parame
     // omega_sl = (Lm / Tr) * i_q / psi_r
     control->omega_sl = (params->Lm / params->Tr) * (iq_for_slip / control->psi_r);
 
-    // Low-pass filter omega_sl before integration — prevents noisy iq_ref
-    // from corrupting theta_e (effect grows with electrical speed)
-    control->omega_sl_filt = FOC_OMEGA_SL_LPF_ALPHA * control->omega_sl_filt
-                          + (1.0f - FOC_OMEGA_SL_LPF_ALPHA) * control->omega_sl;
-
     // theta_sl = theta_sl + omega_sl_filt * Ts
-    control->theta_sl = WrapAngle0To2Pi(control->theta_sl + control->omega_sl_filt * params->Ts);
+    control->theta_sl = WrapAngle0To2Pi(control->theta_sl + control->omega_sl * params->Ts);
 
 }
 
@@ -248,7 +240,6 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
             ctrl->iq_controller.integral = 0.0f;
             ctrl->speed_controller.integral = 0.0f;
             ctrl->omega_ref_ramped = 0.0f;
-            ctrl->omega_sl_filt = 0.0f;
             ctrl->omega_e = 0.0f;
             ctrl->theta_e = 0.0f;
 
@@ -291,9 +282,9 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
                 if (ff < -params->iq_max * 0.5f) ff = -params->iq_max * 0.5f;
                 ctrl->iq_ff = ff;
             }
-            //iq_ref += ctrl->iq_ff;
-            //if (iq_ref >  params->iq_max) iq_ref =  params->iq_max;
-            //if (iq_ref < -params->iq_max) iq_ref = -params->iq_max;
+            // iq_ref += ctrl->iq_ff;
+            // if (iq_ref >  params->iq_max) iq_ref =  params->iq_max;
+            // if (iq_ref < -params->iq_max) iq_ref = -params->iq_max;
 
             Flux_Slip_Update(ctrl, params, id_ref, iq_ref);
             break;

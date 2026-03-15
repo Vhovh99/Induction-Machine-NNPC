@@ -11,8 +11,11 @@
                                          // Kp = sigma_Ls*BW = 0.236*200 = 47.2 V/A
                                          // Ki = Rs*BW       = 52.43*200 = 10486 V/(A·s)
 #define FOC_SPEED_RAMP_RATE     209.0f   // Speed ref slew rate (rad/s per s) ≈ 2000 rpm/s
-#define FOC_OMEGA_SL_LPF_ALPHA  0.9969f  // slip freq LPF coeff  (30 Hz @ 20 kHz)
-#define FOC_THETA_CORR_GAIN     50.0f    // PLL correction gain (rad/s per rad error)
+
+// PLL gain scheduled with speed: high gain at high speed causes oscillation at
+// low speed where omega_e is small. 10 is safe across the full speed range.
+#define FOC_THETA_CORR_GAIN     10.0f    // PLL correction gain (rad/s per rad error)
+
 #define FOC_FLUX_BUILD_TIME     0.2f     // Flux build duration (s)
 #define FOC_PSI_MIN             1e-3f    // Minimum rotor flux (Wb)
 #define FOC_ONE_BY_SQRT3        0.577350269f
@@ -72,7 +75,6 @@ typedef struct {
     // Angle generation
     float theta_sl;         // Slip angle accumulated separately (rad)
     float omega_sl;         // Slip angular velocity raw (rad/s)
-    float omega_sl_filt;    // Low-pass filtered slip frequency (rad/s)
     float omega_e;          // Electrical angular velocity (rad/s)
     float theta_e;          // Electrical angle — integrated omega_e, used for Park (rad)
 
@@ -87,7 +89,12 @@ typedef struct {
     float iq_pi_out;        // Speed PI output = iq_ref commanded to the current loop (A)
     float omega_m_prev;     // Previous-cycle omega_m for dwr_dt computation (rad/s)
     float dwr_dt;           // Filtered mechanical acceleration (rad/s²) — NN input
-    float iq_ff;            // NN-predicted feedforward iq (A); added to speed PI output
+    float iq_ff;            // NN-predicted feedforward iq (A); written by main-loop NN_IqFF_Task()
+
+    // NN inference handoff (ISR snapshots inputs, main loop runs inference)
+    float    nn_inputs[4];  // [omega_m, omega_ref_ramped, dwr_dt, imr]
+    float    nn_iq_max;     // iq_max at snapshot time
+    uint32_t nn_pending;    // set to 1 by ISR, cleared by NN_IqFF_Task()
 
     // Current feedback in dq
     Park_Out_t i_dq;      // Raw measured d and q axis currents (A)

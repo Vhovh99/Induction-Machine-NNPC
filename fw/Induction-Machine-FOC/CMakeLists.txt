@@ -41,9 +41,16 @@ add_executable(${CMAKE_PROJECT_NAME})
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)
 
+# ─── X-CUBE-AI 10.2.0 ────────────────────────────────────────────────────────
+# These entries live here (user CMakeLists.txt) so CubeMX regeneration of
+# cmake/stm32cubemx/CMakeLists.txt cannot break the AI build.
+# After every CubeMX regeneration run ./post_cubemx.sh to strip the duplicate
+# AI source/lib entries that CubeMX writes back into cmake/stm32cubemx/.
+set(XCUBE_AI_PACK "$ENV{HOME}/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/10.2.0")
+
 # Link directories setup
 target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user defined library search paths
+    ${XCUBE_AI_PACK}/Middlewares/ST/AI/Lib/GCC/ARMCortexM4
 )
 
 # Add sources to executable
@@ -59,14 +66,18 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/digital_filter.c
     Core/Src/serial_protocol.c
     Core/Src/nn_iq_ff.c
+    # X-CUBE-AI generated network sources
+    X-CUBE-AI/App/network.c
+    X-CUBE-AI/App/network_data.c
+    X-CUBE-AI/App/network_data_params.c
 )
 
 set(CMAKE_C_LINK_FLAGS "${CMAKE_C_LINK_FLAGS} -u _printf_float")
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
-    # X-CUBE-AI runtime headers (from installed STM32Cube pack)
-    $ENV{HOME}/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/10.2.0/Utilities/linux/targets/common/EmbedNets/tools/inspector/workspace/include
+    X-CUBE-AI/App
+    ${XCUBE_AI_PACK}/Middlewares/ST/AI/Inc
 )
 
 # Add project symbols (macros)
@@ -83,8 +94,7 @@ list(REMOVE_ITEM CMAKE_C_IMPLICIT_LINK_LIBRARIES ob)
 # Add linked libraries
 target_link_libraries(${CMAKE_PROJECT_NAME}
     stm32cubemx
-
-    # Add user defined libraries
+    :NetworkRuntime1020_CM4_GCC.a
 )
 
 # Specify the output ELF file
