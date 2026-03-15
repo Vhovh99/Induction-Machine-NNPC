@@ -20,7 +20,7 @@ class TelemetryBuffer:
         self.currents_ib = deque(maxlen=buffer_size)       # phase B current (A)
         self.currents_ic = deque(maxlen=buffer_size)       # phase C current (A)
         self.theta_e_values = deque(maxlen=buffer_size)     # electrical angle (rad)
-        self.theta_e_integ_values = deque(maxlen=buffer_size)  # integrated electrical angle (rad)
+        self.torque_e_values = deque(maxlen=buffer_size)     # estimated electromagnetic torque (N·m)
 
         # Speed reference for overlay on plot
         self.speed_references = deque(maxlen=buffer_size)
@@ -34,7 +34,7 @@ class TelemetryBuffer:
 
     def add_telemetry(self, id_val: float, iq_val: float, vbus: float,
                       omega_m: float, ia: float, ib: float, ic: float,
-                      theta_e: float = 0.0, theta_e_integ: float = 0.0):
+                      theta_e: float = 0.0, torque_e: float = 0.0):
         self.timestamps.append(self._sample_idx)
         self._sample_idx += 1
         self.id_currents.append(id_val)
@@ -45,7 +45,7 @@ class TelemetryBuffer:
         self.currents_ib.append(ib)
         self.currents_ic.append(ic)
         self.theta_e_values.append(theta_e)
-        self.theta_e_integ_values.append(theta_e_integ)
+        self.torque_e_values.append(torque_e)
         self.speed_references.append(self.reference_speed)
 
     def set_telemetry_divider(self, divider: int):
@@ -70,7 +70,7 @@ class TelemetryBuffer:
                 'ib': empty,
                 'ic': empty,
                 'theta_e': empty,
-                'theta_e_integ': empty,
+                'torque_e': empty,
             }
 
         indices = np.array(list(self.timestamps))
@@ -87,7 +87,7 @@ class TelemetryBuffer:
             'ib': np.array(list(self.currents_ib)),
             'ic': np.array(list(self.currents_ic)),
             'theta_e': np.array(list(self.theta_e_values)),
-            'theta_e_integ': np.array(list(self.theta_e_integ_values)),
+            'torque_e': np.array(list(self.torque_e_values)),
         }
 
     def get_latest_values(self) -> dict:
@@ -95,7 +95,7 @@ class TelemetryBuffer:
             return {
                 'omega_m': 0.0, 'id': 0.0, 'iq': 0.0,
                 'vbus': 0.0, 'ia': 0.0, 'ib': 0.0, 'ic': 0.0,
-                'theta_e': 0.0, 'theta_e_integ': 0.0,
+                'theta_e': 0.0, 'torque_e': 0.0,
             }
         return {
             'omega_m': self.omega_m_values[-1],
@@ -106,7 +106,7 @@ class TelemetryBuffer:
             'ib': self.currents_ib[-1],
             'ic': self.currents_ic[-1],
             'theta_e': self.theta_e_values[-1],
-            'theta_e_integ': self.theta_e_integ_values[-1],
+            'torque_e': self.torque_e_values[-1],
         }
 
     def clear(self):
@@ -120,5 +120,5 @@ class TelemetryBuffer:
         self.currents_ib.clear()
         self.currents_ic.clear()
         self.theta_e_values.clear()
-        self.theta_e_integ_values.clear()
+        self.torque_e_values.clear()
         self.speed_references.clear()

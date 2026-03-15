@@ -340,6 +340,7 @@ class MotorControlUI(QMainWindow):
         self.current_canvas, self.current_ax = self._make_plot_tab(tabs, "Phase Currents (A)")
         self.vbus_canvas,    self.vbus_ax    = self._make_plot_tab(tabs, "Bus Voltage (V)")
         self.theta_canvas,   self.theta_ax   = self._make_plot_tab(tabs, "Theta_e (rad)")
+        self.torque_canvas,  self.torque_ax  = self._make_plot_tab(tabs, "Torque (N·m)")
         
         layout.addWidget(tabs)
         return panel
@@ -470,7 +471,7 @@ class MotorControlUI(QMainWindow):
         self.data_buffer.add_telemetry(
             data['id'], data['iq'], data['vbus'],
             data['omega_m'], data['ia'], data['ib'], data['ic'],
-            data.get('theta_e', 0.0), data.get('theta_e_integ', 0.0),
+            data.get('theta_e', 0.0), data.get('torque_e', 0.0),
         )
         self._update_status_display(data)
     
@@ -506,6 +507,7 @@ class MotorControlUI(QMainWindow):
             self._plot_current(plot_data)
             self._plot_vbus(plot_data)
             self._plot_theta_e(plot_data)
+            self._plot_torque(plot_data)
     
     @staticmethod
     def _save_view(ax):
@@ -586,14 +588,26 @@ class MotorControlUI(QMainWindow):
         self.theta_ax.clear()
         t = data['time']
         self.theta_ax.plot(t, data['theta_e'], 'b-', label='theta_e', linewidth=1.5)
-        self.theta_ax.plot(t, data['theta_e_integ'], 'r--', label='theta_e_integ', linewidth=1.5)
         self.theta_ax.set_xlabel('Time (s)')
         self.theta_ax.set_ylabel('Angle (rad)')
-        self.theta_ax.set_title('Electrical Angle: theta_e vs theta_e_integ')
+        self.theta_ax.set_title('Electrical Angle (theta_e)')
         self.theta_ax.legend(loc='best')
         self.theta_ax.grid(True, alpha=0.3)
         self._restore_view(self.theta_ax, view)
         self.theta_canvas.draw()
+
+    def _plot_torque(self, data: dict):
+        view = self._save_view(self.torque_ax)
+        self.torque_ax.clear()
+        t = data['time']
+        self.torque_ax.plot(t, data['torque_e'], 'darkorange', label='torque_e', linewidth=1.5)
+        self.torque_ax.set_xlabel('Time (s)')
+        self.torque_ax.set_ylabel('Torque (N·m)')
+        self.torque_ax.set_title('Estimated Electromagnetic Torque')
+        self.torque_ax.legend(loc='best')
+        self.torque_ax.grid(True, alpha=0.3)
+        self._restore_view(self.torque_ax, view)
+        self.torque_canvas.draw()
     
     # ---- Utility ----
     
