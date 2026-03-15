@@ -91,11 +91,6 @@ typedef struct {
     float dwr_dt;           // Filtered mechanical acceleration (rad/s²) — NN input
     float iq_ff;            // NN-predicted feedforward iq (A); written by main-loop NN_IqFF_Task()
 
-    // NN inference handoff (ISR snapshots inputs, main loop runs inference)
-    float    nn_inputs[4];  // [omega_m, omega_ref_ramped, dwr_dt, imr]
-    float    nn_iq_max;     // iq_max at snapshot time
-    uint32_t nn_pending;    // set to 1 by ISR, cleared by NN_IqFF_Task()
-
     // Current feedback in dq
     Park_Out_t i_dq;      // Raw measured d and q axis currents (A)
 
