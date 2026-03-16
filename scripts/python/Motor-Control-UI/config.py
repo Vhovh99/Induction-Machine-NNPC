@@ -8,12 +8,12 @@ SERIAL_TIMEOUT = 1.0  # seconds
 BUFFER_SIZE = 500  # Number of samples to keep in memory
 
 # UI Settings
-WINDOW_WIDTH = 1400
-WINDOW_HEIGHT = 900
+WINDOW_WIDTH = 1280
+WINDOW_HEIGHT = 800
 REFRESH_RATE = 50  # milliseconds
 
 # Speed Reference Limits (RPM) — firmware converts RPM to rad/s internally
-SPEED_REF_MIN = -2000.0
+SPEED_REF_MIN = 0.0
 SPEED_REF_MAX = 2000.0
 SPEED_REF_DEFAULT = 500.0
 
@@ -25,7 +25,7 @@ ID_REF_DEFAULT = 1.13  # firmware default
 # Telemetry Divider
 TELEMETRY_DIV_MIN = 0
 TELEMETRY_DIV_MAX = 10000
-TELEMETRY_DIV_DEFAULT = 200  # firmware default
+TELEMETRY_DIV_DEFAULT = 10  # firmware default
 
 # Motor Parameters (for display conversions)
 MOTOR_POLE_PAIRS = 2

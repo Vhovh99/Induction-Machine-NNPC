@@ -1,31 +1,30 @@
 import numpy as np
-from collections import deque
-from typing import Optional
 from config import BUFFER_SIZE, PWM_FREQUENCY, TELEMETRY_DIV_DEFAULT
 
 
 class TelemetryBuffer:
-    """Maintains circular buffers for telemetry data matching firmware telemetry packet."""
+    """Stores the full telemetry history (unbounded) so plots can pan back in time."""
 
     def __init__(self, buffer_size: int = BUFFER_SIZE):
+        # buffer_size kept for API compatibility but no longer limits storage
         self.buffer_size = buffer_size
+        self._init_lists()
 
-        # Circular buffers matching firmware Telemetry_Packet_t fields
-        self.timestamps = deque(maxlen=buffer_size)
-        self.id_currents = deque(maxlen=buffer_size)       # d-axis current (A)
-        self.iq_currents = deque(maxlen=buffer_size)       # q-axis current (A)
-        self.vbus_values = deque(maxlen=buffer_size)       # DC bus voltage (V)
-        self.omega_m_values = deque(maxlen=buffer_size)    # mechanical speed (rad/s)
-        self.currents_ia = deque(maxlen=buffer_size)       # phase A current (A)
-        self.currents_ib = deque(maxlen=buffer_size)       # phase B current (A)
-        self.currents_ic = deque(maxlen=buffer_size)       # phase C current (A)
-        self.theta_e_values = deque(maxlen=buffer_size)       # electrical angle (rad)
-        self.torque_e_values = deque(maxlen=buffer_size)       # estimated electromagnetic torque (N·m)
-        self.imr_values = deque(maxlen=buffer_size)            # magnetising current = psi_r/Lm (A)
-        self.dwr_dt_values = deque(maxlen=buffer_size)         # mechanical acceleration (rad/s²)
-
-        # Speed reference for overlay on plot
-        self.speed_references = deque(maxlen=buffer_size)
+    def _init_lists(self):
+        # Unbounded lists — all samples since last clear() are retained
+        self.timestamps = []
+        self.id_currents = []        # d-axis current (A)
+        self.iq_currents = []        # q-axis current (A)
+        self.vbus_values = []        # DC bus voltage (V)
+        self.omega_m_values = []     # mechanical speed (rad/s)
+        self.currents_ia = []        # phase A current (A)
+        self.currents_ib = []        # phase B current (A)
+        self.currents_ic = []        # phase C current (A)
+        self.theta_e_values = []     # electrical angle (rad)
+        self.torque_e_values = []    # electromagnetic torque (N·m)
+        self.imr_values = []         # magnetising current (A)
+        self.dwr_dt_values = []      # mechanical acceleration (rad/s²)
+        self.speed_references = []
         self.reference_speed = 0.0  # rad/s
 
         # Monotonic sample counter — avoids batched-read timestamp artifact:
@@ -80,23 +79,23 @@ class TelemetryBuffer:
                 'dwr_dt': empty,
             }
 
-        indices = np.array(list(self.timestamps))
+        indices = np.array(self.timestamps)
         time_relative = (indices - indices[0]) * self._sample_period
 
         return {
             'time': time_relative,
-            'omega_m': np.array(list(self.omega_m_values)),
-            'speed_reference': np.array(list(self.speed_references)),
-            'id': np.array(list(self.id_currents)),
-            'iq': np.array(list(self.iq_currents)),
-            'vbus': np.array(list(self.vbus_values)),
-            'ia': np.array(list(self.currents_ia)),
-            'ib': np.array(list(self.currents_ib)),
-            'ic': np.array(list(self.currents_ic)),
-            'theta_e': np.array(list(self.theta_e_values)),
-            'torque_e': np.array(list(self.torque_e_values)),
-            'imr': np.array(list(self.imr_values)),
-            'dwr_dt': np.array(list(self.dwr_dt_values)),
+            'omega_m': np.array(self.omega_m_values),
+            'speed_reference': np.array(self.speed_references),
+            'id': np.array(self.id_currents),
+            'iq': np.array(self.iq_currents),
+            'vbus': np.array(self.vbus_values),
+            'ia': np.array(self.currents_ia),
+            'ib': np.array(self.currents_ib),
+            'ic': np.array(self.currents_ic),
+            'theta_e': np.array(self.theta_e_values),
+            'torque_e': np.array(self.torque_e_values),
+            'imr': np.array(self.imr_values),
+            'dwr_dt': np.array(self.dwr_dt_values),
         }
 
     def get_latest_values(self) -> dict:
@@ -121,17 +120,5 @@ class TelemetryBuffer:
         }
 
     def clear(self):
-        self.timestamps.clear()
         self._sample_idx = 0
-        self.id_currents.clear()
-        self.iq_currents.clear()
-        self.vbus_values.clear()
-        self.omega_m_values.clear()
-        self.currents_ia.clear()
-        self.currents_ib.clear()
-        self.currents_ic.clear()
-        self.theta_e_values.clear()
-        self.torque_e_values.clear()
-        self.imr_values.clear()
-        self.dwr_dt_values.clear()
-        self.speed_references.clear()
+        self._init_lists()

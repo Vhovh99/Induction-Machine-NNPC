@@ -4,7 +4,7 @@ import csv
 import os
 
 from PyQt5.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea,
     QPushButton, QLabel, QSpinBox, QDoubleSpinBox, QComboBox,
     QTextEdit, QTabWidget, QGroupBox, QFormLayout, QStatusBar,
     QLineEdit, QFileDialog
@@ -97,6 +97,33 @@ class MotorControlUI(QMainWindow):
         self._csv_writer = None
         self._csv_logging = False
         self._csv_sample_count = 0
+
+        # Speed pattern state
+        self._pattern_steps = []   # list of (t_seconds, speed_rpm)
+        self._pattern_step_idx = 0
+        self._pattern_start_wall = 0.0
+        self._pattern_running = False
+
+        # Predefined patterns: list of (elapsed_seconds, speed_rpm) tuples
+        self.PATTERNS = {
+            "Step 0→500→0 RPM": [
+                (0.0, 500), (5.0, 0),
+            ],
+            "Step 0→1000→0 RPM": [
+                (0.0, 1000), (8.0, 0),
+            ],
+            "Multi-Step Up/Down": [
+                (0.0,  200), (4.0,  400), (8.0,  700),
+                (12.0, 400), (16.0, 200), (20.0,   0),
+            ],
+            "Hold 700 RPM → Stop": [
+                (0.0, 700), (10.0, 0),
+            ],
+            "Ramp 0→800→0 RPM": (
+                [(i * 0.5, i * 100) for i in range(9)] +
+                [(4.0 + i * 0.5, 800 - i * 100) for i in range(1, 10)]
+            ),
+        }
         
         # UI state
         self.connected = False
@@ -109,6 +136,11 @@ class MotorControlUI(QMainWindow):
         self.plot_timer = QTimer()
         self.plot_timer.timeout.connect(self._update_plots)
         self.plot_timer.start(REFRESH_RATE)
+
+        # Pattern runner timer (100 ms tick)
+        self._pattern_timer = QTimer()
+        self._pattern_timer.timeout.connect(self._pattern_tick)
+        self._pattern_timer.setInterval(100)
         
         # Status bar
         self.statusBar().showMessage("Ready. Select a serial port to connect.")
@@ -119,10 +151,16 @@ class MotorControlUI(QMainWindow):
         main_layout = QHBoxLayout(main_widget)
         
         left_panel = self._create_control_panel()
-        main_layout.addWidget(left_panel, 1)
-        
+        scroll = QScrollArea()
+        scroll.setWidget(left_panel)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setMinimumWidth(360)
+        scroll.setMaximumWidth(440)
+        main_layout.addWidget(scroll, 0)
+
         right_panel = self._create_plot_panel()
-        main_layout.addWidget(right_panel, 2)
+        main_layout.addWidget(right_panel, 1)
     
     def _create_control_panel(self) -> QWidget:
         panel = QWidget()
@@ -131,6 +169,7 @@ class MotorControlUI(QMainWindow):
         layout.addWidget(self._create_connection_group())
         layout.addWidget(self._create_motor_control_group())
         layout.addWidget(self._create_load_group())
+        layout.addWidget(self._create_pattern_group())
         layout.addWidget(self._create_foc_control_group())
         layout.addWidget(self._create_status_group())
         layout.addWidget(self._create_csv_group())
@@ -237,6 +276,40 @@ class MotorControlUI(QMainWindow):
         self.status_button.setEnabled(False)
         layout.addRow(self.status_button)
         
+        group.setLayout(layout)
+        return group
+
+    def _create_pattern_group(self) -> QGroupBox:
+        group = QGroupBox("Speed Pattern")
+        layout = QVBoxLayout()
+
+        # Pattern selector
+        self.pattern_combo = QComboBox()
+        self.pattern_combo.addItems(list(self.PATTERNS.keys()))
+        layout.addWidget(self.pattern_combo)
+
+        # Status label
+        self.pattern_status_label = QLabel("Idle")
+        self.pattern_status_label.setAlignment(Qt.AlignCenter)
+        self.pattern_status_label.setFont(QFont("Courier", 8))
+        layout.addWidget(self.pattern_status_label)
+
+        # Start / Stop / Clear History buttons
+        btn_layout = QHBoxLayout()
+        self.pattern_start_btn = QPushButton("Run Pattern")
+        self.pattern_start_btn.setStyleSheet("background-color: #90EE90; font-weight: bold;")
+        self.pattern_start_btn.clicked.connect(self._pattern_start)
+        self.pattern_stop_btn = QPushButton("Stop")
+        self.pattern_stop_btn.setStyleSheet("background-color: #FFB6C1;")
+        self.pattern_stop_btn.clicked.connect(self._pattern_stop)
+        self.pattern_stop_btn.setEnabled(False)
+        self.clear_history_btn = QPushButton("Clear History")
+        self.clear_history_btn.clicked.connect(self._clear_history)
+        btn_layout.addWidget(self.pattern_start_btn)
+        btn_layout.addWidget(self.pattern_stop_btn)
+        btn_layout.addWidget(self.clear_history_btn)
+        layout.addLayout(btn_layout)
+
         group.setLayout(layout)
         return group
 
@@ -511,7 +584,8 @@ class MotorControlUI(QMainWindow):
     # ---- Command Methods ----
     
     def _set_speed_ref(self):
-        val = self.speed_ref_spin.value()
+        val = max(0.0, self.speed_ref_spin.value())
+        self.speed_ref_spin.setValue(val)
         if self.serial_comm.set_speed_ref(val):
             self.data_buffer.set_speed_reference(val)
             self._add_log_message(f"Speed ref set to {val:.0f} RPM")
@@ -601,7 +675,64 @@ class MotorControlUI(QMainWindow):
 
     def _load_all(self):
         self._apply_load(RELAY_COUNT)
-    
+
+    # ---- Pattern runner ----
+
+    def _pattern_start(self):
+        name = self.pattern_combo.currentText()
+        self._pattern_steps = list(self.PATTERNS[name])
+        self._pattern_step_idx = 0
+        self._pattern_start_wall = time.time()
+        self._pattern_running = True
+        self.pattern_start_btn.setEnabled(False)
+        self.pattern_stop_btn.setEnabled(True)
+        self._pattern_timer.start()
+        total = self._pattern_steps[-1][0]
+        self._add_log_message(f"Pattern '{name}' started ({len(self._pattern_steps)} steps, {total:.1f}s)")
+
+    def _pattern_stop(self):
+        self._pattern_running = False
+        self._pattern_timer.stop()
+        self.pattern_start_btn.setEnabled(True)
+        self.pattern_stop_btn.setEnabled(False)
+        self.pattern_status_label.setText("Stopped")
+        self._add_log_message("Pattern stopped")
+
+    def _pattern_tick(self):
+        if not self._pattern_running:
+            return
+        elapsed = time.time() - self._pattern_start_wall
+
+        # Dispatch any steps whose time has come
+        while (self._pattern_step_idx < len(self._pattern_steps) and
+               elapsed >= self._pattern_steps[self._pattern_step_idx][0]):
+            t, rpm = self._pattern_steps[self._pattern_step_idx]
+            self.serial_comm.set_speed_ref(rpm)
+            self.data_buffer.set_speed_reference(rpm)
+            self._pattern_step_idx += 1
+
+        # Update status label
+        total = self._pattern_steps[-1][0]
+        if self._pattern_step_idx < len(self._pattern_steps):
+            next_t, next_rpm = self._pattern_steps[self._pattern_step_idx]
+            cur_rpm = self._pattern_steps[self._pattern_step_idx - 1][1] if self._pattern_step_idx > 0 else 0
+            remaining = next_t - elapsed
+            self.pattern_status_label.setText(
+                f"{elapsed:.1f}s / {total:.1f}s | {cur_rpm:+.0f} RPM → {next_rpm:+.0f} RPM in {remaining:.1f}s"
+            )
+        else:
+            self.pattern_status_label.setText(f"Done ({total:.1f}s)")
+            self._pattern_stop()
+
+    def _clear_history(self):
+        self.data_buffer.clear()
+        # Reset zoom state on all axes so they autoscale again
+        for ax in (self.speed_ax, self.park_ax, self.current_ax,
+                   self.vbus_ax, self.theta_ax, self.torque_ax):
+            ax.set_autoscalex_on(True)
+            ax.set_autoscaley_on(True)
+        self._add_log_message("Plot history cleared")
+
     # ---- Response Handlers ----
     
     def _on_ack(self, cmd_echo: int):
@@ -780,6 +911,8 @@ class MotorControlUI(QMainWindow):
         )
     
     def closeEvent(self, event):
+        if self._pattern_running:
+            self._pattern_stop()
         if self._csv_logging:
             self._csv_stop()
         if self.connected:
