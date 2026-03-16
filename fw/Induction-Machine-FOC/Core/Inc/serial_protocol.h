@@ -27,6 +27,7 @@
 #define CMD_SET_SPEED_PI        0x06  /* payload: float Kp, float Ki */
 #define CMD_GET_STATUS          0x07  /* no payload */
 #define CMD_SET_TELEMETRY_DIV   0x08  /* payload: uint16_t divider (0 = off) */
+#define CMD_SET_LOAD            0x09  /* payload: uint8_t load_count (0 = no load, max = all relays) */
 
 /* -------- Response IDs (MCU → Host) -------- */
 #define RSP_ACK                 0x80  /* payload: uint8_t cmd_echo */

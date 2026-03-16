@@ -1,5 +1,6 @@
 #include "serial_protocol.h"
 #include "foc_control.h"
+#include "relay_control.h"
 #include <string.h>
 #include "main.h"
 
@@ -150,6 +151,12 @@ static void process_frame(Proto_Handle_t *proto)
             memcpy(&div, p, 2);
             proto->telem_divider = div;
         }
+        send_ack(proto, cmd);
+        break;
+
+    case CMD_SET_LOAD:
+        if (len != 1) { send_nack(proto, cmd, ERR_BAD_LENGTH); break; }
+        Relay_SetLoad(p[0]);
         send_ack(proto, cmd);
         break;
 
