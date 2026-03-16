@@ -6,7 +6,7 @@
 #include "svpwm.h"
 
 /* -------- Tunable FOC Parameters -------- */
-#define FOC_PI_MAX_VOLTAGE      220.0f   // PI output clamp (V)
+#define FOC_PI_MAX_VOLTAGE      175.0f   // PI output clamp (V) — must be <= Vbus/sqrt(3) = 179.6V @ 311V bus
 #define FOC_CURRENT_PI_BW       200.0f   // Current loop bandwidth (rad/s)
                                          // Kp = sigma_Ls*BW = 0.236*200 = 47.2 V/A
                                          // Ki = Rs*BW       = 52.43*200 = 10486 V/(A·s)
@@ -26,6 +26,13 @@
 // Ki zero at wc/5 = 7 rad/s → Ki = Kp * 7 = 0.091 A/(rad/s²)
 #define FOC_SPEED_PI_KP         0.013f
 #define FOC_SPEED_PI_KI         0.091f
+
+// Field weakening — integrator that reduces id_ref when |V_dq| exceeds the
+// inverter's linear-region limit, restoring id_ref when back below base speed.
+// Ki: plant gain id→Vq ≈ ωe*Lm ≈ 107 V/A @ 1000 RPM → Ki=0.15 gives ~16 rad/s BW.
+#define FOC_FW_KI               0.15f    // FW integrator gain (A per V per s)
+#define FOC_FW_VMARGIN          0.90f    // Onset at 90 % of Vbus/√3; 10 % headroom for transients
+#define FOC_FW_ID_MIN           0.15f    // Minimum id in field-weakening region (A)
 
 typedef struct {
     // <Motor Parameters>
@@ -107,6 +114,10 @@ typedef struct {
 
     // Startup timing
     float flux_build_time; // Time to build up rotor flux (s)
+
+    // Field weakening
+    float fw_id_ref;     // FW-adjusted id reference (A). Starts at id_ref_cmnd,
+                         // reduced automatically above base speed.
 
 } Motor_Control_t;
 

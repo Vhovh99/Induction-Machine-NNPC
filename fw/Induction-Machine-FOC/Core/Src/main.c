@@ -300,6 +300,9 @@ int main(void)
   // svpwm_test();
   // PWM_STOP();
 
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+  float ff = NN_IqFF_Run(50, 52, 17, 0.49);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
   /* USER CODE END 2 */
 
   /* Infinite loop */

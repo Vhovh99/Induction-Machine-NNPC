@@ -242,6 +242,7 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
             ctrl->omega_ref_ramped = 0.0f;
             ctrl->omega_e = 0.0f;
             ctrl->theta_e = 0.0f;
+            ctrl->fw_id_ref = id_ref_cmnd;  /* start at rated; FW reduces if needed */
 
             ctrl->state = MOTOR_STATE_FLUX_BUILD;
             break;
@@ -257,7 +258,22 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
             break;
         case MOTOR_STATE_RUNNING:
         default:
-            id_ref = id_ref_cmnd;
+            /* ---- Field weakening ----
+             * Monitor the voltage magnitude demanded by the PI controllers in the
+             * previous cycle. If it exceeds FOC_FW_VMARGIN * Vbus/√3, bleed down
+             * fw_id_ref so the back-EMF fits within the inverter's linear region.
+             * The integrator also winds fw_id_ref back up to id_ref_cmnd when the
+             * motor decelerates below base speed. */
+            {
+                float v_max_fw  = vbus * FOC_ONE_BY_SQRT3;
+                float v_dq_mag  = sqrtf(ctrl->v_dq.d * ctrl->v_dq.d +
+                                        ctrl->v_dq.q * ctrl->v_dq.q);
+                float fw_err    = v_dq_mag - FOC_FW_VMARGIN * v_max_fw; /* >0 → over limit */
+                ctrl->fw_id_ref -= FOC_FW_KI * fw_err * params->Ts;
+                if (ctrl->fw_id_ref > id_ref_cmnd)   ctrl->fw_id_ref = id_ref_cmnd;
+                if (ctrl->fw_id_ref < FOC_FW_ID_MIN) ctrl->fw_id_ref = FOC_FW_ID_MIN;
+            }
+            id_ref = ctrl->fw_id_ref;
 
             // Speed reference rate limiter
             float ramp_step = FOC_SPEED_RAMP_RATE * params->Ts;
