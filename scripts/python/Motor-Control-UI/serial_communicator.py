@@ -19,6 +19,7 @@ CMD_SET_CURRENT_PI = 0x05
 CMD_SET_SPEED_PI = 0x06
 CMD_GET_STATUS = 0x07
 CMD_SET_TELEMETRY_DIV = 0x08
+CMD_SET_LOAD = 0x09
 
 # Response IDs (MCU -> Host)
 RSP_ACK = 0x80
@@ -179,6 +180,11 @@ class SerialCommunicator:
     def set_telemetry_div(self, divider: int) -> bool:
         divider = max(0, min(0xFFFF, int(divider)))
         return self._send_frame(CMD_SET_TELEMETRY_DIV, struct.pack('<H', divider))
+
+    def set_load(self, count: int) -> bool:
+        """Set the number of active load relays (0 = no load, RELAY_COUNT = max)."""
+        count = max(0, min(0xFF, int(count)))
+        return self._send_frame(CMD_SET_LOAD, struct.pack('<B', count))
 
     # ---- RX state machine ----
 

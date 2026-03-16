@@ -30,6 +30,7 @@ TELEMETRY_DIV_DEFAULT = 200  # firmware default
 # Motor Parameters (for display conversions)
 MOTOR_POLE_PAIRS = 2
 PWM_FREQUENCY = 20000  # Hz — firmware PWM/ISR frequency
+RELAY_COUNT = 5        # number of load relays
 
 # Plotting
 PLOT_LINE_WIDTH = 1.5

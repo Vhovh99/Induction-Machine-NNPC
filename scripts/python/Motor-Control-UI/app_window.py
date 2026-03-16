@@ -46,6 +46,7 @@ from config import (
     SPEED_REF_MIN, SPEED_REF_MAX, SPEED_REF_DEFAULT,
     ID_REF_MIN, ID_REF_MAX, ID_REF_DEFAULT,
     TELEMETRY_DIV_MIN, TELEMETRY_DIV_MAX, TELEMETRY_DIV_DEFAULT,
+    RELAY_COUNT,
 )
 
 
@@ -129,6 +130,7 @@ class MotorControlUI(QMainWindow):
         
         layout.addWidget(self._create_connection_group())
         layout.addWidget(self._create_motor_control_group())
+        layout.addWidget(self._create_load_group())
         layout.addWidget(self._create_foc_control_group())
         layout.addWidget(self._create_status_group())
         layout.addWidget(self._create_csv_group())
@@ -235,6 +237,46 @@ class MotorControlUI(QMainWindow):
         self.status_button.setEnabled(False)
         layout.addRow(self.status_button)
         
+        group.setLayout(layout)
+        return group
+
+    def _create_load_group(self) -> QGroupBox:
+        group = QGroupBox("Load Control")
+        layout = QVBoxLayout()
+
+        # Relay indicator row
+        self._load_count = 0
+        indicator_layout = QHBoxLayout()
+        self._relay_labels = []
+        for i in range(RELAY_COUNT):
+            lbl = QLabel(f"R{i+1}")
+            lbl.setAlignment(Qt.AlignCenter)
+            lbl.setFixedWidth(30)
+            lbl.setStyleSheet("background-color: #cccccc; border: 1px solid #888; border-radius: 3px;")
+            indicator_layout.addWidget(lbl)
+            self._relay_labels.append(lbl)
+        layout.addLayout(indicator_layout)
+
+        # +/- buttons and remove-all
+        btn_layout = QHBoxLayout()
+        self.load_dec_btn = QPushButton("− Relay")
+        self.load_dec_btn.clicked.connect(self._load_decrease)
+        self.load_inc_btn = QPushButton("+ Relay")
+        self.load_inc_btn.clicked.connect(self._load_increase)
+        self.load_clear_btn = QPushButton("No Load")
+        self.load_clear_btn.clicked.connect(self._load_clear)
+        self.load_all_btn = QPushButton("Full Load")
+        self.load_all_btn.clicked.connect(self._load_all)
+        btn_layout.addWidget(self.load_dec_btn)
+        btn_layout.addWidget(self.load_inc_btn)
+        btn_layout.addWidget(self.load_clear_btn)
+        btn_layout.addWidget(self.load_all_btn)
+        layout.addLayout(btn_layout)
+
+        self.load_count_label = QLabel("Active relays: 0")
+        self.load_count_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.load_count_label)
+
         group.setLayout(layout)
         return group
 
@@ -531,6 +573,34 @@ class MotorControlUI(QMainWindow):
             self._add_log_message("Status request sent")
         else:
             self._add_log_message("ERROR: Failed to request status")
+
+    # ---- Load control ----
+
+    def _apply_load(self, count: int):
+        self._load_count = max(0, min(RELAY_COUNT, count))
+        if self.serial_comm.set_load(self._load_count):
+            self._add_log_message(f"Load set to {self._load_count} relay(s)")
+        else:
+            self._add_log_message("ERROR: Failed to set load")
+        # Update indicators
+        for i, lbl in enumerate(self._relay_labels):
+            if i < self._load_count:
+                lbl.setStyleSheet("background-color: #ff6b35; border: 1px solid #c0392b; border-radius: 3px; color: white; font-weight: bold;")
+            else:
+                lbl.setStyleSheet("background-color: #cccccc; border: 1px solid #888; border-radius: 3px;")
+        self.load_count_label.setText(f"Active relays: {self._load_count} / {RELAY_COUNT}")
+
+    def _load_increase(self):
+        self._apply_load(self._load_count + 1)
+
+    def _load_decrease(self):
+        self._apply_load(self._load_count - 1)
+
+    def _load_clear(self):
+        self._apply_load(0)
+
+    def _load_all(self):
+        self._apply_load(RELAY_COUNT)
     
     # ---- Response Handlers ----
     

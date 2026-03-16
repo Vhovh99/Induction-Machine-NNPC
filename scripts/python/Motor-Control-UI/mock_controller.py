@@ -28,6 +28,7 @@ CMD_SET_CURRENT_PI = 0x05
 CMD_SET_SPEED_PI = 0x06
 CMD_GET_STATUS = 0x07
 CMD_SET_TELEMETRY_DIV = 0x08
+CMD_SET_LOAD = 0x09
 
 RSP_ACK = 0x80
 RSP_NACK = 0x81
@@ -241,6 +242,13 @@ class MockMotorController:
             self.telem_divider = struct.unpack('<H', payload)[0]
             self.telem_counter = 0
             print(f"  SET_TELEMETRY_DIV: {self.telem_divider}")
+            self._send_ack(cmd)
+
+        elif cmd == CMD_SET_LOAD:
+            if plen != 1:
+                self._send_nack(cmd, ERR_BAD_LENGTH); return
+            load_count = payload[0]
+            print(f"  SET_LOAD: {load_count} relay(s)")
             self._send_ack(cmd)
 
         else:
