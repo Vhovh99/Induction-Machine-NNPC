@@ -43,7 +43,7 @@ LR          = 1e-2         # higher LR needed for tanh to converge in ~1000 epoc
 PATIENCE    = 60          # early-stopping patience (epochs without val improvement)
 VAL_SPLIT   = 0.15
 TEST_SPLIT  = 0.10
-HIDDEN      = [16, 8]          # 4 → 8 → 1  (tiny, MCU-friendly)
+HIDDEN      = [4]          # 4 → 8 → 1  (tiny, MCU-friendly)
 
 # Noise filter: rows where |dwr_dt| exceeds this threshold are discarded.
 # The raw signal is a numerical derivative of omega_m and contains large
