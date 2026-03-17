@@ -41,8 +41,9 @@
 #define ERR_BAD_CRC             0x03
 #define ERR_INVALID_VALUE       0x04
 
-/* -------- Telemetry Packet (44 bytes) -------- */
+/* -------- Telemetry Packet (52 bytes) -------- */
 typedef struct {
+    uint32_t timestamp_ms;// HAL_GetTick() at time of sample (ms)
     float id;             // d-axis current (A)
     float iq;             // q-axis current (A)        [NN label]
     float vbus;           // DC bus voltage (V)

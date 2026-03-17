@@ -132,6 +132,7 @@ void send_telemetry(void) {
         if (now - proto.telem_last_ms >= proto.telem_divider) {
             proto.telem_last_ms = now;
             Telemetry_Packet_t telem;
+            telem.timestamp_ms = HAL_GetTick();
             if (run_foc_loop) {
                 telem.id       = motor_control.i_dq.d;
                 telem.iq       = motor_control.i_dq.q;
@@ -276,10 +277,6 @@ int main(void)
       .pwm_period_ticks = PWM_PERIOD_TICKS
   };
   SVPWM_Init(&svpwm_config);
-
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
-  float ff = NN_IqFF_Run(50, 52, 17, 0.49);
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
 
   Encoder_Init(&encoder, &htim2, 2000);
 
