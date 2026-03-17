@@ -3,6 +3,8 @@ import time
 import csv
 import os
 
+import numpy as np
+
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea,
     QPushButton, QLabel, QSpinBox, QDoubleSpinBox, QComboBox,
@@ -475,7 +477,7 @@ class MotorControlUI(QMainWindow):
         try:
             self._csv_file = open(path, 'w', newline='', encoding='utf-8')
             self._csv_writer = csv.writer(self._csv_file)
-            self._csv_writer.writerow(['iq', 'omega_m', 'omega_m_ref', 'imr', 'dwr_dt'])
+            self._csv_writer.writerow(['iq', 'omega_m', 'omega_m_ref', 'imr', 'dwr_dt', 'iq_I_term'])
             self._csv_logging = True
             self._csv_sample_count = 0
             self.csv_start_btn.setEnabled(False)
@@ -522,15 +524,29 @@ class MotorControlUI(QMainWindow):
     def _create_plot_panel(self) -> QWidget:
         panel = QWidget()
         layout = QVBoxLayout(panel)
+
+        # ── Time-window control ────────────────────────────────────────────────
+        toolbar_row = QHBoxLayout()
+        toolbar_row.addWidget(QLabel("Time window:"))
+        self._window_spin = QDoubleSpinBox()
+        self._window_spin.setRange(1.0, 300.0)
+        self._window_spin.setValue(10.0)
+        self._window_spin.setSingleStep(1.0)
+        self._window_spin.setSuffix(" s")
+        self._window_spin.setFixedWidth(90)
+        self._window_spin.setToolTip("Scrolling time window shown on the plots")
+        toolbar_row.addWidget(self._window_spin)
+        toolbar_row.addStretch()
+        layout.addLayout(toolbar_row)
+
         tabs = QTabWidget()
-        
         self.speed_canvas,   self.speed_ax   = self._make_plot_tab(tabs, "Speed (RPM)")
         self.park_canvas,    self.park_ax    = self._make_plot_tab(tabs, "Park Currents (A)")
         self.current_canvas, self.current_ax = self._make_plot_tab(tabs, "Phase Currents (A)")
         self.vbus_canvas,    self.vbus_ax    = self._make_plot_tab(tabs, "Bus Voltage (V)")
         self.theta_canvas,   self.theta_ax   = self._make_plot_tab(tabs, "Theta_e (rad)")
         self.torque_canvas,  self.torque_ax  = self._make_plot_tab(tabs, "Torque (N·m)")
-        
+
         layout.addWidget(tabs)
         return panel
     
@@ -557,6 +573,9 @@ class MotorControlUI(QMainWindow):
             self.start_button.setEnabled(True)
             self.stop_button.setEnabled(True)
             self.status_button.setEnabled(True)
+            # Sync the buffer sample period to whatever divider is shown in the spinbox,
+            # so the time axis is correct from the very first packet.
+            self.data_buffer.set_telemetry_divider(self.telem_div_spin.value())
             self._add_log_message(f"Connected to {port} @ 230400 baud")
         else:
             self._add_log_message(f"Failed to connect to {port}")
@@ -603,6 +622,7 @@ class MotorControlUI(QMainWindow):
         val = self.telem_div_spin.value()
         if self.serial_comm.set_telemetry_div(val):
             self.data_buffer.set_telemetry_divider(val)
+            self.data_buffer.clear()   # reset timestamps so all samples use the new period
             msg = f"Telemetry divider set to {val}" if val > 0 else "Telemetry disabled"
             self._add_log_message(msg)
         else:
@@ -759,6 +779,7 @@ class MotorControlUI(QMainWindow):
                 f"{omega_m_ref_rads:.6f}",
                 f"{data.get('imr', 0.0):.6f}",
                 f"{data.get('dwr_dt', 0.0):.6f}",
+                f"{data.get('iq_I_term', 0.0):.6f}",
             ])
             self._csv_sample_count += 1
             self.csv_count_label.setText(f"{self._csv_sample_count} samples")
@@ -790,29 +811,36 @@ class MotorControlUI(QMainWindow):
     
     def _update_plots(self):
         plot_data = self.data_buffer.get_plot_data()
-        if len(plot_data['time']) > 0:
-            self._plot_speed(plot_data)
-            self._plot_park(plot_data)
-            self._plot_current(plot_data)
-            self._plot_vbus(plot_data)
-            self._plot_theta_e(plot_data)
-            self._plot_torque(plot_data)
+        if len(plot_data['time']) == 0:
+            return
+
+        # Slice to the rolling time window
+        t = plot_data['time']
+        t_now = t[-1]
+        t_start = t_now - self._window_spin.value()
+        mask = t >= t_start
+        windowed = {k: (v[mask] if isinstance(v, np.ndarray) else v)
+                    for k, v in plot_data.items()}
+
+        self._plot_speed(windowed)
+        self._plot_park(windowed)
+        self._plot_current(windowed)
+        self._plot_vbus(windowed)
+        self._plot_theta_e(windowed)
+        self._plot_torque(windowed)
     
     @staticmethod
     def _save_view(ax):
-        """Return current axis limits if the user has zoomed/panned, else None."""
-        if not ax.get_autoscalex_on() or not ax.get_autoscaley_on():
-            return ax.get_xlim(), ax.get_ylim()
+        """Return current y-limits if the user has manually zoomed/panned y, else None."""
+        if not ax.get_autoscaley_on():
+            return ax.get_ylim()
         return None
 
     @staticmethod
     def _restore_view(ax, view):
-        """Re-apply saved axis limits and disable autoscale to keep the view locked."""
+        """Re-apply saved y-limits so a user zoom is preserved across redraws."""
         if view is not None:
-            xlim, ylim = view
-            ax.set_xlim(xlim)
-            ax.set_ylim(ylim)
-            ax.set_autoscalex_on(False)
+            ax.set_ylim(view)
             ax.set_autoscaley_on(False)
 
     def _plot_speed(self, data: dict):
@@ -822,6 +850,8 @@ class MotorControlUI(QMainWindow):
         omega_rpm = data['omega_m'] * 60.0 / (2.0 * 3.141592653589793)
         self.speed_ax.plot(t, omega_rpm, 'b-', label='Actual', linewidth=1.5)
         self.speed_ax.plot(t, data['speed_reference'], 'r--', label='Reference', linewidth=1.5)
+        if len(t) > 0:
+            self.speed_ax.set_xlim(t[0], t[-1] + 1e-6)
         self.speed_ax.set_xlabel('Time (s)')
         self.speed_ax.set_ylabel('Speed (RPM)')
         self.speed_ax.set_title('Mechanical Speed')
@@ -836,6 +866,8 @@ class MotorControlUI(QMainWindow):
         t = data['time']
         self.park_ax.plot(t, data['id'], 'g-', label='Id', linewidth=1.5)
         self.park_ax.plot(t, data['iq'], 'm-', label='Iq', linewidth=1.5)
+        if len(t) > 0:
+            self.park_ax.set_xlim(t[0], t[-1] + 1e-6)
         self.park_ax.set_xlabel('Time (s)')
         self.park_ax.set_ylabel('Current (A)')
         self.park_ax.set_title('Park Currents (d-q)')
@@ -851,6 +883,8 @@ class MotorControlUI(QMainWindow):
         self.current_ax.plot(t, data['ia'], 'c-', label='Ia', linewidth=1.5)
         self.current_ax.plot(t, data['ib'], 'y-', label='Ib', linewidth=1.5)
         self.current_ax.plot(t, data['ic'], 'k-', label='Ic', linewidth=1.5)
+        if len(t) > 0:
+            self.current_ax.set_xlim(t[0], t[-1] + 1e-6)
         self.current_ax.set_xlabel('Time (s)')
         self.current_ax.set_ylabel('Current (A)')
         self.current_ax.set_title('Phase Currents')
@@ -864,6 +898,8 @@ class MotorControlUI(QMainWindow):
         self.vbus_ax.clear()
         t = data['time']
         self.vbus_ax.plot(t, data['vbus'], 'r-', label='Vbus', linewidth=1.5)
+        if len(t) > 0:
+            self.vbus_ax.set_xlim(t[0], t[-1] + 1e-6)
         self.vbus_ax.set_xlabel('Time (s)')
         self.vbus_ax.set_ylabel('Voltage (V)')
         self.vbus_ax.set_title('DC Bus Voltage')
@@ -877,6 +913,8 @@ class MotorControlUI(QMainWindow):
         self.theta_ax.clear()
         t = data['time']
         self.theta_ax.plot(t, data['theta_e'], 'b-', label='theta_e', linewidth=1.5)
+        if len(t) > 0:
+            self.theta_ax.set_xlim(t[0], t[-1] + 1e-6)
         self.theta_ax.set_xlabel('Time (s)')
         self.theta_ax.set_ylabel('Angle (rad)')
         self.theta_ax.set_title('Electrical Angle (theta_e)')
@@ -890,6 +928,8 @@ class MotorControlUI(QMainWindow):
         self.torque_ax.clear()
         t = data['time']
         self.torque_ax.plot(t, data['torque_e'], 'darkorange', label='torque_e', linewidth=1.5)
+        if len(t) > 0:
+            self.torque_ax.set_xlim(t[0], t[-1] + 1e-6)
         self.torque_ax.set_xlabel('Time (s)')
         self.torque_ax.set_ylabel('Torque (N·m)')
         self.torque_ax.set_title('Estimated Electromagnetic Torque')

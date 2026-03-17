@@ -20,7 +20,7 @@ SPEED_REF_DEFAULT = 500.0
 # Id Reference Limits (A)
 ID_REF_MIN = -10.0
 ID_REF_MAX = 10.0
-ID_REF_DEFAULT = 1.13  # firmware default
+ID_REF_DEFAULT = 0.5  # firmware default
 
 # Telemetry Divider
 TELEMETRY_DIV_MIN = 0
@@ -30,6 +30,7 @@ TELEMETRY_DIV_DEFAULT = 10  # firmware default
 # Motor Parameters (for display conversions)
 MOTOR_POLE_PAIRS = 2
 PWM_FREQUENCY = 20000  # Hz — firmware PWM/ISR frequency
+TELEMETRY_BASE_FREQ = 1000  # Hz — telemetry divider counts ms ticks (1 kHz base)
 RELAY_COUNT = 5        # number of load relays
 
 # Plotting
