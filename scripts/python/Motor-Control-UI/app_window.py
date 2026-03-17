@@ -22,11 +22,14 @@ FigureCanvas = None
 Figure = None
 plt = None
 NavigationToolbar = None
+ticker = None
+plt = None
+NavigationToolbar = None
 
 
 def _init_matplotlib():
     """Initialize matplotlib backend - must be called after QApplication is created."""
-    global FigureCanvas, Figure, plt, NavigationToolbar
+    global FigureCanvas, Figure, plt, NavigationToolbar, ticker
     if FigureCanvas is not None:
         return  # Already initialized
     
@@ -36,11 +39,13 @@ def _init_matplotlib():
     from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NT
     from matplotlib.figure import Figure as Fig
     import matplotlib.pyplot as mp
+    import matplotlib.ticker as mticker
     
     FigureCanvas = FC
     NavigationToolbar = NT
     Figure = Fig
     plt = mp
+    ticker = mticker
 
 
 from config import (
@@ -536,6 +541,12 @@ class MotorControlUI(QMainWindow):
         self._window_spin.setFixedWidth(90)
         self._window_spin.setToolTip("Scrolling time window shown on the plots")
         toolbar_row.addWidget(self._window_spin)
+        self._pause_btn = QPushButton("Pause")
+        self._pause_btn.setCheckable(True)
+        self._pause_btn.setFixedWidth(70)
+        self._pause_btn.setToolTip("Pause / resume live plot updates")
+        self._pause_btn.toggled.connect(self._on_pause_toggled)
+        toolbar_row.addWidget(self._pause_btn)
         toolbar_row.addStretch()
         layout.addLayout(toolbar_row)
 
@@ -620,11 +631,16 @@ class MotorControlUI(QMainWindow):
     
     def _set_telemetry_div(self):
         val = self.telem_div_spin.value()
+        if val == 0:
+            # 0 means "preserve graph / keep current firmware divider unchanged".
+            # Do NOT send the command to the MCU — sending 0 can change the
+            # firmware's actual send rate while _sample_period stays stale.
+            self._add_log_message("Telemetry divider unchanged (graph preserved)")
+            return
         if self.serial_comm.set_telemetry_div(val):
             self.data_buffer.set_telemetry_divider(val)
             self.data_buffer.clear()   # reset timestamps so all samples use the new period
-            msg = f"Telemetry divider set to {val}" if val > 0 else "Telemetry disabled"
-            self._add_log_message(msg)
+            self._add_log_message(f"Telemetry divider set to {val}")
         else:
             self._add_log_message("ERROR: Failed to set telemetry divider")
     
@@ -709,6 +725,11 @@ class MotorControlUI(QMainWindow):
         self._pattern_timer.start()
         total = self._pattern_steps[-1][0]
         self._add_log_message(f"Pattern '{name}' started ({len(self._pattern_steps)} steps, {total:.1f}s)")
+        # Clear buffer and axes so the plot starts from t=0 at pattern launch
+        self._clear_history()
+        # Auto-start the motor if it isn't already running
+        if not self.motor_running:
+            self._start_motor()
 
     def _pattern_stop(self):
         self._pattern_running = False
@@ -717,6 +738,8 @@ class MotorControlUI(QMainWindow):
         self.pattern_stop_btn.setEnabled(False)
         self.pattern_status_label.setText("Stopped")
         self._add_log_message("Pattern stopped")
+        if self.motor_running:
+            self._stop_motor()
 
     def _pattern_tick(self):
         if not self._pattern_running:
@@ -768,6 +791,7 @@ class MotorControlUI(QMainWindow):
             data['omega_m'], data['ia'], data['ib'], data['ic'],
             data.get('theta_e', 0.0), data.get('torque_e', 0.0),
             data.get('imr', 0.0), data.get('dwr_dt', 0.0),
+            data.get('iq_I_term', 0.0), data.get('timestamp_ms', 0),
         )
         # Write to CSV if logging — omega_m_ref converted from RPM to rad/s
         if self._csv_logging and self._csv_writer is not None:
@@ -808,13 +832,23 @@ class MotorControlUI(QMainWindow):
         )
     
     # ---- Plot Methods ----
-    
+
+    @staticmethod
+    def _apply_grid(ax):
+        """Apply grid with major lines every 1 second on x-axis."""
+        ax.xaxis.set_major_locator(ticker.MultipleLocator(1.0))
+        ax.grid(True, which='major', alpha=0.3)
+
+    def _on_pause_toggled(self, paused: bool):
+        self._pause_btn.setText("Resume" if paused else "Pause")
+
     def _update_plots(self):
+        if self._pause_btn.isChecked():
+            return
         plot_data = self.data_buffer.get_plot_data()
         if len(plot_data['time']) == 0:
             return
 
-        # Slice to the rolling time window
         t = plot_data['time']
         t_now = t[-1]
         t_start = t_now - self._window_spin.value()
@@ -831,16 +865,19 @@ class MotorControlUI(QMainWindow):
     
     @staticmethod
     def _save_view(ax):
-        """Return current y-limits if the user has manually zoomed/panned y, else None."""
-        if not ax.get_autoscaley_on():
-            return ax.get_ylim()
+        """Return (xlim, ylim) if the user has zoomed/panned either axis, else None."""
+        if not ax.get_autoscalex_on() or not ax.get_autoscaley_on():
+            return ax.get_xlim(), ax.get_ylim()
         return None
 
     @staticmethod
     def _restore_view(ax, view):
-        """Re-apply saved y-limits so a user zoom is preserved across redraws."""
+        """Re-apply saved limits and lock both axes so the user zoom is preserved."""
         if view is not None:
-            ax.set_ylim(view)
+            xlim, ylim = view
+            ax.set_xlim(xlim)
+            ax.set_ylim(ylim)
+            ax.set_autoscalex_on(False)
             ax.set_autoscaley_on(False)
 
     def _plot_speed(self, data: dict):
@@ -850,13 +887,14 @@ class MotorControlUI(QMainWindow):
         omega_rpm = data['omega_m'] * 60.0 / (2.0 * 3.141592653589793)
         self.speed_ax.plot(t, omega_rpm, 'b-', label='Actual', linewidth=1.5)
         self.speed_ax.plot(t, data['speed_reference'], 'r--', label='Reference', linewidth=1.5)
-        if len(t) > 0:
+        if len(t) > 0 and view is None:
             self.speed_ax.set_xlim(t[0], t[-1] + 1e-6)
+            self.speed_ax.set_autoscalex_on(True)  # keep x-autoscale active so _save_view only locks on toolbar zoom
         self.speed_ax.set_xlabel('Time (s)')
         self.speed_ax.set_ylabel('Speed (RPM)')
         self.speed_ax.set_title('Mechanical Speed')
         self.speed_ax.legend(loc='best')
-        self.speed_ax.grid(True, alpha=0.3)
+        self._apply_grid(self.speed_ax)
         self._restore_view(self.speed_ax, view)
         self.speed_canvas.draw()
     
@@ -866,13 +904,14 @@ class MotorControlUI(QMainWindow):
         t = data['time']
         self.park_ax.plot(t, data['id'], 'g-', label='Id', linewidth=1.5)
         self.park_ax.plot(t, data['iq'], 'm-', label='Iq', linewidth=1.5)
-        if len(t) > 0:
+        if len(t) > 0 and view is None:
             self.park_ax.set_xlim(t[0], t[-1] + 1e-6)
+            self.park_ax.set_autoscalex_on(True)
         self.park_ax.set_xlabel('Time (s)')
         self.park_ax.set_ylabel('Current (A)')
         self.park_ax.set_title('Park Currents (d-q)')
         self.park_ax.legend(loc='best')
-        self.park_ax.grid(True, alpha=0.3)
+        self._apply_grid(self.park_ax)
         self._restore_view(self.park_ax, view)
         self.park_canvas.draw()
     
@@ -883,13 +922,14 @@ class MotorControlUI(QMainWindow):
         self.current_ax.plot(t, data['ia'], 'c-', label='Ia', linewidth=1.5)
         self.current_ax.plot(t, data['ib'], 'y-', label='Ib', linewidth=1.5)
         self.current_ax.plot(t, data['ic'], 'k-', label='Ic', linewidth=1.5)
-        if len(t) > 0:
+        if len(t) > 0 and view is None:
             self.current_ax.set_xlim(t[0], t[-1] + 1e-6)
+            self.current_ax.set_autoscalex_on(True)
         self.current_ax.set_xlabel('Time (s)')
         self.current_ax.set_ylabel('Current (A)')
         self.current_ax.set_title('Phase Currents')
         self.current_ax.legend(loc='best')
-        self.current_ax.grid(True, alpha=0.3)
+        self._apply_grid(self.current_ax)
         self._restore_view(self.current_ax, view)
         self.current_canvas.draw()
     
@@ -898,13 +938,14 @@ class MotorControlUI(QMainWindow):
         self.vbus_ax.clear()
         t = data['time']
         self.vbus_ax.plot(t, data['vbus'], 'r-', label='Vbus', linewidth=1.5)
-        if len(t) > 0:
+        if len(t) > 0 and view is None:
             self.vbus_ax.set_xlim(t[0], t[-1] + 1e-6)
+            self.vbus_ax.set_autoscalex_on(True)
         self.vbus_ax.set_xlabel('Time (s)')
         self.vbus_ax.set_ylabel('Voltage (V)')
         self.vbus_ax.set_title('DC Bus Voltage')
         self.vbus_ax.legend(loc='best')
-        self.vbus_ax.grid(True, alpha=0.3)
+        self._apply_grid(self.vbus_ax)
         self._restore_view(self.vbus_ax, view)
         self.vbus_canvas.draw()
     
@@ -913,13 +954,14 @@ class MotorControlUI(QMainWindow):
         self.theta_ax.clear()
         t = data['time']
         self.theta_ax.plot(t, data['theta_e'], 'b-', label='theta_e', linewidth=1.5)
-        if len(t) > 0:
+        if len(t) > 0 and view is None:
             self.theta_ax.set_xlim(t[0], t[-1] + 1e-6)
+            self.theta_ax.set_autoscalex_on(True)
         self.theta_ax.set_xlabel('Time (s)')
         self.theta_ax.set_ylabel('Angle (rad)')
         self.theta_ax.set_title('Electrical Angle (theta_e)')
         self.theta_ax.legend(loc='best')
-        self.theta_ax.grid(True, alpha=0.3)
+        self._apply_grid(self.theta_ax)
         self._restore_view(self.theta_ax, view)
         self.theta_canvas.draw()
 
@@ -928,13 +970,14 @@ class MotorControlUI(QMainWindow):
         self.torque_ax.clear()
         t = data['time']
         self.torque_ax.plot(t, data['torque_e'], 'darkorange', label='torque_e', linewidth=1.5)
-        if len(t) > 0:
+        if len(t) > 0 and view is None:
             self.torque_ax.set_xlim(t[0], t[-1] + 1e-6)
+            self.torque_ax.set_autoscalex_on(True)
         self.torque_ax.set_xlabel('Time (s)')
         self.torque_ax.set_ylabel('Torque (N·m)')
         self.torque_ax.set_title('Estimated Electromagnetic Torque')
         self.torque_ax.legend(loc='best')
-        self.torque_ax.grid(True, alpha=0.3)
+        self._apply_grid(self.torque_ax)
         self._restore_view(self.torque_ax, view)
         self.torque_canvas.draw()
     

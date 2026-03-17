@@ -1,5 +1,5 @@
 import numpy as np
-from config import BUFFER_SIZE, TELEMETRY_BASE_FREQ, TELEMETRY_DIV_DEFAULT
+from config import BUFFER_SIZE
 
 
 class TelemetryBuffer:
@@ -28,20 +28,22 @@ class TelemetryBuffer:
         self.speed_references = []
         self.reference_speed = 0.0  # rad/s
 
-        # Elapsed time accumulator: incremented by _sample_period on every packet.
-        # Gives perfectly uniform sample spacing (no OS-clock burst artifacts)
-        # while keeping the x-axis in true seconds. Divider changes only affect
-        # future samples — historical timestamps remain unchanged.
-        self._elapsed_time = 0.0
-        self._sample_period = TELEMETRY_DIV_DEFAULT / TELEMETRY_BASE_FREQ  # seconds per sample
+        # Hardware timestamp from MCU (HAL_GetTick, ms -> s).
+        # Using the firmware clock guarantees accurate time regardless of
+        # host OS scheduling, baud rate, or telemetry divider value.
+        self._first_timestamp_ms: int | None = None
 
     def add_telemetry(self, id_val: float, iq_val: float, vbus: float,
                       omega_m: float, ia: float, ib: float, ic: float,
                       theta_e: float = 0.0, torque_e: float = 0.0,
                       imr: float = 0.0, dwr_dt: float = 0.0,
-                      iq_I_term: float = 0.0):
-        self.timestamps.append(self._elapsed_time)
-        self._elapsed_time += self._sample_period
+                      iq_I_term: float = 0.0, timestamp_ms: int = 0):
+        # Convert MCU hardware timestamp to seconds, relative to first sample.
+        if self._first_timestamp_ms is None:
+            self._first_timestamp_ms = timestamp_ms
+        t_sec = (timestamp_ms - self._first_timestamp_ms) / 1000.0
+        self.timestamps.append(t_sec)
+        self._elapsed_time = t_sec  # keep for any legacy access
         self.id_currents.append(id_val)
         self.iq_currents.append(iq_val)
         self.vbus_values.append(vbus)
@@ -57,9 +59,7 @@ class TelemetryBuffer:
         self.speed_references.append(self.reference_speed)
 
     def set_telemetry_divider(self, divider: int):
-        """Update the expected sample period when the telemetry divider changes."""
-        if divider > 0:
-            self._sample_period = divider / TELEMETRY_BASE_FREQ
+        pass  # no-op: timing is now derived from the MCU hardware timestamp
 
     def set_speed_reference(self, omega_ref: float):
         self.reference_speed = omega_ref
@@ -124,5 +124,5 @@ class TelemetryBuffer:
         }
 
     def clear(self):
-        self._elapsed_time = 0.0
+        self._first_timestamp_ms = None
         self._init_lists()
