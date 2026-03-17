@@ -49,50 +49,53 @@ extern "C" {
 
 /* USER CODE END EM */
 
-void HAL_HRTIM_MspPostInit(HRTIM_HandleTypeDef *hhrtim);
+void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
 
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-
-// Motor control functions for 3-phase AC induction motor
-void Motor_Start(void);
-void Motor_Stop(void);
-void Motor_SetFrequency(float frequency);
-void Motor_SetAmplitude(float amplitude);
-void Motor_Update(void);
-void Update_3Phase_PWM(float phase, float amplitude);
-
+void PWM_STOP(void);
+void PWM_START(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define RELAY10_Pin GPIO_PIN_13
-#define RELAY10_GPIO_Port GPIOC
-#define RELAY9_Pin GPIO_PIN_14
-#define RELAY9_GPIO_Port GPIOC
-#define RCC_OSC_IN_Pin GPIO_PIN_0
-#define RCC_OSC_IN_GPIO_Port GPIOF
-#define RCC_OSC_OUT_Pin GPIO_PIN_1
-#define RCC_OSC_OUT_GPIO_Port GPIOF
-#define RELAY4_Pin GPIO_PIN_1
-#define RELAY4_GPIO_Port GPIOB
-#define RELAY5_Pin GPIO_PIN_2
-#define RELAY5_GPIO_Port GPIOB
-#define RELAY1_Pin GPIO_PIN_10
-#define RELAY1_GPIO_Port GPIOA
-#define RELAY7_Pin GPIO_PIN_11
-#define RELAY7_GPIO_Port GPIOA
-#define RELAY8_Pin GPIO_PIN_12
-#define RELAY8_GPIO_Port GPIOA
-#define RELAY2_Pin GPIO_PIN_3
+#define PHASE_C_CURR_Pin GPIO_PIN_0
+#define PHASE_C_CURR_GPIO_Port GPIOC
+#define PHASE_B_CURR_Pin GPIO_PIN_1
+#define PHASE_B_CURR_GPIO_Port GPIOC
+#define VTSO_Pin GPIO_PIN_2
+#define VTSO_GPIO_Port GPIOC
+#define PHASE_A_CURR_Pin GPIO_PIN_0
+#define PHASE_A_CURR_GPIO_Port GPIOA
+#define VBUS_SENS_Pin GPIO_PIN_1
+#define VBUS_SENS_GPIO_Port GPIOA
+#define FAULT_Pin GPIO_PIN_6
+#define FAULT_GPIO_Port GPIOA
+#define UL_PWM_Pin GPIO_PIN_7
+#define UL_PWM_GPIO_Port GPIOA
+#define VL_PWM_Pin GPIO_PIN_0
+#define VL_PWM_GPIO_Port GPIOB
+#define WL_PWM_Pin GPIO_PIN_1
+#define WL_PWM_GPIO_Port GPIOB
+#define RELAY1_Pin GPIO_PIN_11
+#define RELAY1_GPIO_Port GPIOB
+#define RELAY2_Pin GPIO_PIN_12
 #define RELAY2_GPIO_Port GPIOB
-#define RELAY3_Pin GPIO_PIN_5
-#define RELAY3_GPIO_Port GPIOB
 #define RELAY6_Pin GPIO_PIN_6
-#define RELAY6_GPIO_Port GPIOB
-#define RELAY11_Pin GPIO_PIN_7
-#define RELAY11_GPIO_Port GPIOB
+#define RELAY6_GPIO_Port GPIOC
+#define RELAY7_Pin GPIO_PIN_7
+#define RELAY7_GPIO_Port GPIOC
+#define RELAY8_Pin GPIO_PIN_8
+#define RELAY8_GPIO_Port GPIOC
+#define RELAY9_Pin GPIO_PIN_9
+#define RELAY9_GPIO_Port GPIOC
+#define UH_PWM_Pin GPIO_PIN_8
+#define UH_PWM_GPIO_Port GPIOA
+#define VH_PWM_Pin GPIO_PIN_9
+#define VH_PWM_GPIO_Port GPIOA
+#define WH_PWM_Pin GPIO_PIN_10
+#define WH_PWM_GPIO_Port GPIOA
 
 /* USER CODE BEGIN Private defines */
 

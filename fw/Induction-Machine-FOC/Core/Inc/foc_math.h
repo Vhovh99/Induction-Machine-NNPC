@@ -3,6 +3,9 @@
 
 #include <math.h>
 
+#define RAD_TO_DEG(rad) ((rad) * 57.29577951308232f)  // 180/π
+#define DEG_TO_RAD(deg) ((deg) * 0.017453292519943f)  // π/180
+
 typedef struct {
     float alpha;
     float beta;
@@ -44,5 +47,12 @@ Park_Out_t Park_Transform(float alpha, float beta, float sin_theta, float cos_th
  * @return Clarke_Out_t Structure containing alpha and beta components
  */
 Clarke_Out_t Inv_Park_Transform(float d, float q, float sin_theta, float cos_theta);
+
+/**
+ * @brief Wraps an angle to the range [0, 2π).
+ * @param angle Angle in radians
+ * @return Wrapped angle in radians
+ */
+float WrapAngle0To2Pi(float angle);
 
 #endif /* FOC_MATH_H */

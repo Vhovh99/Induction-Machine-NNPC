@@ -1,0 +1,6 @@
+%implements s1_b0_chcdd_ModuleConstants "C"
+
+%function ModuleConstants(block) Output
+
+#define IMDriveSensor00_period (5.0E-5)
+%endfunction
