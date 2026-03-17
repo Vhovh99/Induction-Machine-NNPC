@@ -1,17 +1,21 @@
 """
-iq_ff Neural Network Training
-==============================
-Learns the inverse motor mechanical equation:
-  iq_ff = f(omega_m, dwr_dt, imr)
+iq_ff Neural Network Training  —  Residual Learning
+=====================================================
+Predicts the RESIDUAL current that the PI integrator cannot anticipate:
 
-Captures the predictable torque components:
-  - Inertia term:  (J / Kt(imr)) * dwr_dt
-  - Friction term: T_friction(omega_m) / Kt(imr)
+  Δiq = iq - iq_I_term
+      ≈ (J / Kt(imr)) * dwr_dt  +  T_friction(omega_m) / Kt(imr)
 
-The residual load torque is left to the PI controller.
+With the load-torque component (iq_I_term) removed from the target, the
+NN only has to model the deterministic mechanical terms, which are tightly
+correlated with dwr_dt and omega_m.  The PI integrator continues to handle
+the slowly-varying load torque on the MCU.
 
-Inputs : omega_m, dwr_dt, imr
-Target : iq  (recorded closed-loop PI output = ground truth)
+On the MCU:
+  iq_ff = iq_ff_nn(omega_m, omega_m_ref, dwr_dt, imr) + iq_I_term
+
+Inputs : omega_m, omega_m_ref, dwr_dt, imr
+Target : iq - iq_I_term  (mechanical feedforward residual)
 """
 
 import csv
@@ -35,7 +39,12 @@ np.random.seed(SEED)
 torch.manual_seed(SEED)
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-DATA_FILE   = "nn_training_data.csv"
+DATA_FILES  = [
+    "nn_training_data1.csv",
+    "nn_training_data2.csv",
+    "nn_training_data3.csv",
+    "nn_training_data4.csv",
+]
 MODEL_DIR   = "model"
 EPOCHS      = 1000
 BATCH_SIZE  = 256
@@ -43,7 +52,7 @@ LR          = 1e-2         # higher LR needed for tanh to converge in ~1000 epoc
 PATIENCE    = 60          # early-stopping patience (epochs without val improvement)
 VAL_SPLIT   = 0.15
 TEST_SPLIT  = 0.10
-HIDDEN      = [4]          # 4 → 8 → 1  (tiny, MCU-friendly)
+HIDDEN      = [16, 8]      # 4 → 16 → 8 → 1  (MCU-friendly, best R² at low param count)
 
 # Noise filter: rows where |dwr_dt| exceeds this threshold are discarded.
 # The raw signal is a numerical derivative of omega_m and contains large
@@ -56,24 +65,37 @@ DWR_DT_CLIP = 150.0   # rad/s²
 # omega_m_ref added: gives the NN the speed error context so it can
 # distinguish steady-state cruising from active acceleration commands.
 INPUT_COLS  = ["omega_m", "omega_m_ref", "dwr_dt", "imr"]
-TARGET_COL  = "iq"
+TARGET_COL  = "iq"          # raw column in CSV
+RESIDUAL    = True          # if True, train on (iq - iq_I_term) instead of iq
 
 
 # ── 1. Load data ───────────────────────────────────────────────────────────────
-def load_csv(path):
-    with open(path, newline="") as f:
-        reader = csv.DictReader(f)
-        rows = [row for row in reader]
+def load_csv(paths):
+    """Load and concatenate one or more CSV files."""
+    if isinstance(paths, str):
+        paths = [paths]
 
+    all_rows = []
+    for path in paths:
+        with open(path, newline="") as f:
+            reader = csv.DictReader(f)
+            file_rows = list(reader)
+        print(f"  {path}: {len(file_rows)} rows")
+        all_rows.extend(file_rows)
+
+    before = len(all_rows)
     if DWR_DT_CLIP is not None:
-        before = len(rows)
-        rows = [r for r in rows if abs(float(r["dwr_dt"])) <= DWR_DT_CLIP]
-        dropped = before - len(rows)
+        all_rows = [r for r in all_rows if abs(float(r["dwr_dt"])) <= DWR_DT_CLIP]
+        dropped = before - len(all_rows)
         print(f"  dwr_dt filter |dwr_dt| ≤ {DWR_DT_CLIP}: "
-              f"kept {len(rows)}/{before} rows, dropped {dropped} ({100*dropped/before:.1f}%)")
+              f"kept {len(all_rows)}/{before} rows, dropped {dropped} ({100*dropped/before:.1f}%)")
 
-    X = np.array([[float(r[c]) for c in INPUT_COLS] for r in rows], dtype=np.float32)
-    y = np.array([float(r[TARGET_COL]) for r in rows], dtype=np.float32).reshape(-1, 1)
+    X = np.array([[float(r[c]) for c in INPUT_COLS] for r in all_rows], dtype=np.float32)
+    if RESIDUAL:
+        y = np.array([float(r["iq"]) - float(r["iq_I_term"]) for r in all_rows],
+                     dtype=np.float32).reshape(-1, 1)
+    else:
+        y = np.array([float(r[TARGET_COL]) for r in all_rows], dtype=np.float32).reshape(-1, 1)
     return X, y
 
 
@@ -139,11 +161,12 @@ def main():
     os.makedirs(MODEL_DIR, exist_ok=True)
 
     # --- Load & split ---
-    print(f"Loading {DATA_FILE} ...")
-    X, y = load_csv(DATA_FILE)
+    print(f"Loading {len(DATA_FILES)} file(s) ...")
+    X, y = load_csv(DATA_FILES)
     print(f"  Total samples : {len(X)}")
+    effective_target = "iq - iq_I_term (residual)" if RESIDUAL else TARGET_COL
     print(f"  Inputs        : {INPUT_COLS}")
-    print(f"  Target        : {TARGET_COL}")
+    print(f"  Target        : {effective_target}")
 
     X_train, y_train, X_val, y_val, X_test, y_test = split(X, y, VAL_SPLIT, TEST_SPLIT)
     print(f"  Train/Val/Test: {len(X_train)} / {len(X_val)} / {len(X_test)}")
@@ -225,7 +248,8 @@ def main():
     # --- Save scaler params and model meta (for embedded / C export) ---
     meta = {
         "input_cols"   : INPUT_COLS,
-        "target_col"   : TARGET_COL,
+        "target_col"   : "iq_residual" if RESIDUAL else TARGET_COL,
+        "residual_mode": RESIDUAL,
         "hidden_layers": HIDDEN,
         "scaler_X_mean": scaler_X.mean_.tolist(),
         "scaler_X_std" : scaler_X.scale_.tolist(),
@@ -267,8 +291,10 @@ def main():
     lim = [min(y_true.min(), y_pred.min()) - 0.05,
            max(y_true.max(), y_pred.max()) + 0.05]
     axes[1].plot(lim, lim, "r--", linewidth=1, label="Perfect")
-    axes[1].set_xlabel("True iq (A)")
-    axes[1].set_ylabel("Predicted iq_ff (A)")
+    xlabel = "True Δiq = iq−iq_I_term (A)" if RESIDUAL else "True iq (A)"
+    ylabel = "Predicted Δiq (A)" if RESIDUAL else "Predicted iq_ff (A)"
+    axes[1].set_xlabel(xlabel)
+    axes[1].set_ylabel(ylabel)
     axes[1].set_title(f"Parity Plot  R²={r2:.4f}")
     axes[1].legend()
     axes[1].grid(True)

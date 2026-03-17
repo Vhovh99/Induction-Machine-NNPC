@@ -46,7 +46,7 @@ class IqFFNet(nn.Module):
         layers = []
         prev = n_in
         for h in hidden:
-            layers += [nn.Linear(prev, h), nn.ELU()]
+            layers += [nn.Linear(prev, h), nn.Tanh()]
             prev = h
         layers.append(nn.Linear(prev, 1))
         self.net = nn.Sequential(*layers)
@@ -103,7 +103,7 @@ def export_keras_tflite():
     x = inputs
     layer_idx = 0
     for h in HIDDEN:
-        x = tf.keras.layers.Dense(h, activation="elu", name=f"dense_{layer_idx}")(x)
+        x = tf.keras.layers.Dense(h, activation="tanh", name=f"dense_{layer_idx}")(x)
         layer_idx += 1
     outputs = tf.keras.layers.Dense(1, activation="linear", name="iq_ff")(x)
     keras_model = tf.keras.Model(inputs, outputs)
@@ -113,7 +113,7 @@ def export_keras_tflite():
         saved_w = json.load(f)
 
     # Map PyTorch sequential layer indices to Keras dense layers.
-    # PyTorch net: (0)Linear (1)ELU (2)Linear (3)ELU ... (N)Linear
+    # PyTorch net: (0)Linear (1)Tanh (2)Linear (3)Tanh ... (N)Linear
     # keras_model.layers[0] is the Input layer; Dense layers follow.
     # We keep a separate counter pt_idx so the Input layer doesn't offset us.
     pt_idx = 0   # increments by 2 (Linear stride) per Dense layer found
