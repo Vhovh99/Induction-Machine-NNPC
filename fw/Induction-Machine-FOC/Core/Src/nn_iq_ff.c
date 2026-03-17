@@ -7,16 +7,16 @@
  * Normalisation constants — from iq_ff_meta.json produced at training time.
  * Input order: [omega_m (rad/s), omega_m_ref (rad/s), dwr_dt (rad/s²), imr (A)]
  * ----------------------------------------------------------------------- */
-#define NN_X_MEAN_0   ( 66.699f)   // omega_m
-#define NN_X_MEAN_1   ( 70.180f)   // omega_m_ref
-#define NN_X_MEAN_2   ( 12.615f)   // dwr_dt
+#define NN_X_MEAN_0   ( 55.580f)   // omega_m
+#define NN_X_MEAN_1   ( 59.410f)   // omega_m_ref
+#define NN_X_MEAN_2   ( -0.150f)   // dwr_dt
 #define NN_X_MEAN_3   (  0.519f)   // imr
-#define NN_X_STD_0    ( 34.624f)   // omega_m
-#define NN_X_STD_1    ( 26.761f)   // omega_m_ref
-#define NN_X_STD_2    ( 27.832f)   // dwr_dt
-#define NN_X_STD_3    (  0.247f)   // imr
-#define NN_Y_MEAN     (  0.344f)
-#define NN_Y_STD      (  0.316f)
+#define NN_X_STD_0    ( 36.220f)   // omega_m
+#define NN_X_STD_1    ( 34.736f)   // omega_m_ref
+#define NN_X_STD_2    ( 24.269f)   // dwr_dt
+#define NN_X_STD_3    (  0.258f)   // imr
+#define NN_Y_MEAN     ( -0.003f)
+#define NN_Y_STD      (  0.080f)
 
 static ai_handle   nn_handle = AI_HANDLE_NULL;
 

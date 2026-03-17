@@ -298,9 +298,9 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
                 if (ff < -params->iq_max * 0.5f) ff = -params->iq_max * 0.5f;
                 ctrl->iq_ff = ff;
             }
-            // iq_ref += ctrl->iq_ff;
-            // if (iq_ref >  params->iq_max) iq_ref =  params->iq_max;
-            // if (iq_ref < -params->iq_max) iq_ref = -params->iq_max;
+            iq_ref += ctrl->iq_ff;
+            if (iq_ref >  params->iq_max) iq_ref =  params->iq_max;
+            if (iq_ref < -params->iq_max) iq_ref = -params->iq_max;
 
             Flux_Slip_Update(ctrl, params, id_ref, iq_ref);
             break;

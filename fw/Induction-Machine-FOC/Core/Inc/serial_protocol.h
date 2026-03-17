@@ -41,7 +41,7 @@
 #define ERR_BAD_CRC             0x03
 #define ERR_INVALID_VALUE       0x04
 
-/* -------- Telemetry Packet (40 bytes) -------- */
+/* -------- Telemetry Packet (44 bytes) -------- */
 typedef struct {
     float id;             // d-axis current (A)
     float iq;             // q-axis current (A)        [NN label]
@@ -54,6 +54,7 @@ typedef struct {
     float torque_e;       // Estimated electromagnetic torque (N·m)
     float imr;            // Magnetising current = psi_r / Lm (A) [NN input]
     float dwr_dt;         // Mechanical acceleration (rad/s²)      [NN input]
+    float iq_I_term;      // Speed PI integrator output (A) — slow load estimate
 } __attribute__((packed)) Telemetry_Packet_t;
 
 /* -------- Status Packet (16 bytes) -------- */
