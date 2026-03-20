@@ -1,6 +1,6 @@
 ST Edge AI Core v2.2.0-20266 2adc00962
-Created date          : 2026-03-17 21:47:52
-Parameters            : generate --target stm32g4 --name network -m /home/vardan/Projects/Polytech/Induction-Machine-NNPC/scripts/python/NN-Training/model/iq_ff_float32.tflite --compression none --verbosity 1 --workspace /tmp/mxAI_workspace910262160867215050303321570614527 --output /home/vardan/.stm32cubemx/network_output
+Created date          : 2026-03-20 21:06:48
+Parameters            : generate --target stm32g4 --name network -m /home/vardan/Projects/Polytech/Induction-Machine-NNPC/scripts/python/NN-Training/model/iq_ff_float32.tflite --compression none --verbosity 1 -O time --workspace /tmp/mxAI_workspace129916461968536843975410939509414 --output /home/vardan/.stm32cubemx/network_output
 
 Exec/report summary (generate)
 -------------------------------------------------------------------------------------------------------------------------------------
@@ -9,13 +9,13 @@ type               :   tflite
 c_name             :   network                                                                                                       
 compression        :   none                                                                                                          
 options            :   allocate-inputs, allocate-outputs                                                                             
-optimization       :   balanced                                                                                                      
+optimization       :   time                                                                                                          
 target/series      :   stm32g4                                                                                                       
-workspace dir      :   /tmp/mxAI_workspace910262160867215050303321570614527                                                          
+workspace dir      :   /tmp/mxAI_workspace129916461968536843975410939509414                                                          
 output dir         :   /home/vardan/.stm32cubemx/network_output                                                                      
 model_fmt          :   float                                                                                                         
 model_name         :   iq_ff_float32                                                                                                 
-model_hash         :   0x770a36167b50f85b1fec46f3c4c7332e                                                                            
+model_hash         :   0xd77c4863752cb73da6aeb1d7db2b71c8                                                                            
 params #           :   225 items (900 B)                                                                                             
 -------------------------------------------------------------------------------------------------------------------------------------
 input 1/1          :   'serving_default_input0', f32(1x4), 16 Bytes, activations                                                     

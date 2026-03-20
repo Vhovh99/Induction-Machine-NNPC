@@ -333,44 +333,44 @@
   ],
   "environment": {
     "generated_model": {
-      "generated_time": "2026-03-17T21:47:52+0400",
+      "generated_time": "2026-03-20T21:06:47+0400",
       "model_files": [
         {
           "name": "network_data_params.h",
-          "signature": "0x9bfe171b6674c621f4582d8fc7977dfa"
+          "signature": "0x98834894b277ab4309d49039c7dc7766"
         },
         {
           "name": "network_data_params.c",
-          "signature": "0x830757ec670dcef3874b104e8a1c7243"
+          "signature": "0xfb5f6c2ceedab0fd861062eab4b09134"
         },
         {
           "name": "network_data.h",
-          "signature": "0x8c50527453c27fcb3f2e1425c14d1405"
+          "signature": "0xf8451e361e598620ad729046f274dfba"
         },
         {
           "name": "network_data.c",
-          "signature": "0x14fb1504b2160d54d17b870559788e03"
+          "signature": "0xdb3fddbc996f9988b37958e740816b94"
         },
         {
           "name": "network_config.h",
-          "signature": "0xe9fddb0d1202dfb3671c7d3298ce896d"
+          "signature": "0xb784e24c983aa7cfe881490a20569244"
         },
         {
           "name": "network.h",
-          "signature": "0x4816105d5d73670bc0f1651b8f6852b9"
+          "signature": "0x1f8fa455fa9a3d748925706498b90682"
         },
         {
           "name": "network.c",
-          "signature": "0xeb3b027e07c52aedd31c44f6787f92d1"
+          "signature": "0xac425efa1362fc11214cce65ac4f7361"
         }
       ],
       "name": "network"
     },
-    "network_signature": "0x74e77fc8b25cb107",
+    "network_signature": "0x5e4487189c59fdab",
     "test_name": "",
     "tools": [
       {
-        "arguments": "generate --target stm32g4 --name network -m /home/vardan/Projects/Polytech/Induction-Machine-NNPC/scripts/python/NN-Training/model/iq_ff_float32.tflite --compression none --verbosity 1 --workspace /tmp/mxAI_workspace910262160867215050303321570614527 --output /home/vardan/.stm32cubemx/network_output",
+        "arguments": "generate --target stm32g4 --name network -m /home/vardan/Projects/Polytech/Induction-Machine-NNPC/scripts/python/NN-Training/model/iq_ff_float32.tflite --compression none --verbosity 1 -O time --workspace /tmp/mxAI_workspace129916461968536843975410939509414 --output /home/vardan/.stm32cubemx/network_output",
         "environment": [
           "STATS_TYPE=X-CUBE-AI"
         ],
@@ -378,7 +378,7 @@
           "model_files": [
             {
               "name": "iq_ff_float32.tflite",
-              "signature": "0x770a36167b50f85b1fec46f3c4c7332e"
+              "signature": "0xd77c4863752cb73da6aeb1d7db2b71c8"
             }
           ],
           "n_params": 225,

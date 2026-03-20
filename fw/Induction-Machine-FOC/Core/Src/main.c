@@ -278,6 +278,12 @@ int main(void)
   };
   SVPWM_Init(&svpwm_config);
 
+  NN_IqFF_Init();   /* Must be before any NN_IqFF_Run() call */
+
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+  float ff = NN_IqFF_Run(50, 52, 17, 0.49);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+
   Encoder_Init(&encoder, &htim2, 2000);
 
   CurrentSense_Init();
@@ -289,8 +295,6 @@ int main(void)
   Encoder_Start(&encoder);
 
   Motor_Init(&motor_params, &motor_control);
-
-  NN_IqFF_Init();
 
   // PWM_START();
 
@@ -315,6 +319,23 @@ int main(void)
 
     /* Poll DMA circular buffer for incoming protocol frames */
     Proto_Poll(&proto);
+
+    /* Asynchronous NN feedforward — runs inference outside the ISR.
+     * The FOC ISR copies 4 inputs and sets nn_pending_flag every 200 cycles;
+     * we execute NN_IqFF_Run() here where the ~60 µs latency is harmless. */
+    if (nn_pending_flag) {
+        float w   = nn_input_omega_m;
+        float wr  = nn_input_omega_ref;
+        float dw  = nn_input_dwr_dt;
+        float im  = nn_input_imr;
+        nn_pending_flag = 0U;
+
+        float ff = NN_IqFF_Run(w, wr, dw, im);
+        float iq_lim = motor_params.iq_max * 0.5f;
+        if (ff >  iq_lim) ff =  iq_lim;
+        if (ff < -iq_lim) ff = -iq_lim;
+        motor_control.iq_ff = ff;
+    }
 
     /* Temperature watchdog at 1 Hz (ADC2 polled, not interrupt-driven) */
     static uint32_t temp_last_ms = 0;

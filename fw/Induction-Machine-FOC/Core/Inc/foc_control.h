@@ -122,6 +122,13 @@ typedef struct {
 } Motor_Control_t;
 
 
+/* ---- Asynchronous NN feedforward (runs in main-loop, not ISR) ---- */
+extern volatile uint8_t  nn_pending_flag;       /* ISR sets 1 every 200 cycles  */
+extern volatile float    nn_input_omega_m;      /* copied from ISR context       */
+extern volatile float    nn_input_omega_ref;    /* copied from ISR context       */
+extern volatile float    nn_input_dwr_dt;       /* copied from ISR context       */
+extern volatile float    nn_input_imr;          /* copied from ISR context       */
+
 void open_loop_voltage_control(float Vd, float Vq, float angle_rad);
 void svpwm_test(void);
 void Motor_Init(const Motor_Parameters_t *params, Motor_Control_t *ctrl);
