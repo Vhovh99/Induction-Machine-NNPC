@@ -6,7 +6,7 @@
 /* -----------------------------------------------------------------------
  * Neural-network feedforward for iq.
  *
- * Network: 3-input → Dense(16,relu) → Dense(16,relu) → Dense(1,linear)
+ * Network: 4-input → Dense(16,relu) → Dense(16,relu) → Dense(1,linear)
  * Inputs  (all from Motor_Control_t, same units as telemetry logging):
  *   [0] omega_m      — mechanical speed          (rad/s)
  *   [1] omega_m_ref  — rate-limited speed ref     (rad/s)

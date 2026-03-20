@@ -23,6 +23,13 @@ extern Encoder_Handle_t encoder;
 
 float theta_test = 0.0f; // remove later, just for testing open loop control
 
+/* Asynchronous NN feedforward — ISR copies inputs & sets flag; main-loop runs inference */
+volatile uint8_t  nn_pending_flag   = 0;
+volatile float    nn_input_omega_m  = 0.0f;
+volatile float    nn_input_omega_ref= 0.0f;
+volatile float    nn_input_dwr_dt   = 0.0f;
+volatile float    nn_input_imr      = 0.0f;
+
 void PWM_WriteCompareShadow(float cmp_a, float cmp_b, float cmp_c, float cmp_trigger)
 {
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (uint32_t)(cmp_a * PWM_PERIOD_TICKS));
@@ -264,17 +271,17 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
              * fw_id_ref so the back-EMF fits within the inverter's linear region.
              * The integrator also winds fw_id_ref back up to id_ref_cmnd when the
              * motor decelerates below base speed. */
-            {
-                float v_max_fw  = vbus * FOC_ONE_BY_SQRT3;
-                float v_dq_mag  = sqrtf(ctrl->v_dq.d * ctrl->v_dq.d +
-                                        ctrl->v_dq.q * ctrl->v_dq.q);
-                float fw_err    = v_dq_mag - FOC_FW_VMARGIN * v_max_fw; /* >0 → over limit */
-                ctrl->fw_id_ref -= FOC_FW_KI * fw_err * params->Ts;
-                if (ctrl->fw_id_ref > id_ref_cmnd)   ctrl->fw_id_ref = id_ref_cmnd;
-                if (ctrl->fw_id_ref < FOC_FW_ID_MIN) ctrl->fw_id_ref = FOC_FW_ID_MIN;
-            }
-            id_ref = ctrl->fw_id_ref;
-
+            // {
+            //     float v_max_fw  = vbus * FOC_ONE_BY_SQRT3;
+            //     float v_dq_mag  = sqrtf(ctrl->v_dq.d * ctrl->v_dq.d +
+            //                             ctrl->v_dq.q * ctrl->v_dq.q);
+            //     float fw_err    = v_dq_mag - FOC_FW_VMARGIN * v_max_fw; /* >0 → over limit */
+            //     ctrl->fw_id_ref -= FOC_FW_KI * fw_err * params->Ts;
+            //     if (ctrl->fw_id_ref > id_ref_cmnd)   ctrl->fw_id_ref = id_ref_cmnd;
+            //     if (ctrl->fw_id_ref < FOC_FW_ID_MIN) ctrl->fw_id_ref = FOC_FW_ID_MIN;
+            // }
+            // id_ref = ctrl->fw_id_ref;
+            id_ref = id_ref_cmnd;
             // Speed reference rate limiter
             float ramp_step = FOC_SPEED_RAMP_RATE * params->Ts;
             float diff = omega_ref - ctrl->omega_ref_ramped;
@@ -287,20 +294,21 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
             iq_ref = pi_run(&ctrl->speed_controller, speed_err, params->Ts);
             ctrl->iq_pi_out = iq_ref;
 
-            /* NN feedforward — updated at 100 Hz (every 200 FOC cycles).
-             * dwr_dt is 10-Hz LPF filtered, so no new information above 100 Hz.
-             * Clamped to ±iq_max/2 so the PI can always correct residuals. */
-            static uint16_t nn_cnt = 0;
-            if (++nn_cnt >= 200U) {
-                nn_cnt = 0U;
-                float ff = NN_IqFF_Run(omega_m, ctrl->omega_ref_ramped, ctrl->dwr_dt, ctrl->imr);
-                if (ff >  params->iq_max * 0.5f) ff =  params->iq_max * 0.5f;
-                if (ff < -params->iq_max * 0.5f) ff = -params->iq_max * 0.5f;
-                ctrl->iq_ff = ff;
-            }
+            /* NN feedforward — request inference at 100 Hz (every 200 FOC cycles).
+             * Actual NN_IqFF_Run() executes in the main while(1) loop to avoid
+             * blowing the 50 µs ISR deadline (~60 µs inference time). */
+            // static uint16_t nn_cnt = 0;
+            // if (++nn_cnt >= 200U) {
+            //     nn_cnt = 0U;
+            //     nn_input_omega_m  = omega_m;
+            //     nn_input_omega_ref= ctrl->omega_ref_ramped;
+            //     nn_input_dwr_dt   = ctrl->dwr_dt;
+            //     nn_input_imr      = ctrl->imr;
+            //     nn_pending_flag   = 1U;          /* main-loop picks this up */
+            // }
             // iq_ref += ctrl->iq_ff;
-            // if (iq_ref >  params->iq_max) iq_ref =  params->iq_max;
-            // if (iq_ref < -params->iq_max) iq_ref = -params->iq_max;
+            if (iq_ref >  params->iq_max) iq_ref =  params->iq_max;
+            if (iq_ref < -params->iq_max) iq_ref = -params->iq_max;
 
             Flux_Slip_Update(ctrl, params, id_ref, iq_ref);
             break;
@@ -313,9 +321,10 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
     ctrl->v_dq.d = pi_run(&ctrl->id_controller, err_d, params->Ts);
     ctrl->v_dq.q = pi_run(&ctrl->iq_controller, err_q, params->Ts);
 
-    // Feedforward decoupling — reuse omega_e already computed above
+    // Feedforward decoupling — cancel cross-coupling disturbance + back-EMF
     // ctrl->v_dq.d += -ctrl->omega_e * params->sigma_Ls * iq_ref;
-    // ctrl->v_dq.q +=  ctrl->omega_e * params->sigma_Ls * id_ref;
+    // ctrl->v_dq.q +=  ctrl->omega_e * (params->sigma_Ls * id_ref
+    //                                  + (params->Lm / params->Lr) * ctrl->psi_r);
 
     Park_Out_t v_dq = ctrl->v_dq;
 
