@@ -250,6 +250,7 @@ void FOC_Control_Loop(Motor_Control_t *ctrl, const Motor_Parameters_t *params,
             ctrl->omega_e = 0.0f;
             ctrl->theta_e = 0.0f;
             ctrl->fw_id_ref = id_ref_cmnd;  /* start at rated; FW reduces if needed */
+            ctrl->iq_ff    = 0.0f;           /* clear stale NN output from previous run */
 
             ctrl->state = MOTOR_STATE_FLUX_BUILD;
             break;

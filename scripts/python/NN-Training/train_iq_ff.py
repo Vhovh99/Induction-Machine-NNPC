@@ -41,6 +41,7 @@ torch.manual_seed(SEED)
 # ── Config ─────────────────────────────────────────────────────────────────────
 DATA_FILES  = [
     "nn_training_data.csv",
+    "nn_training_data1.csv",
 ]
 MODEL_DIR   = "model"
 EPOCHS      = 1000

@@ -280,9 +280,9 @@ int main(void)
 
   NN_IqFF_Init();   /* Must be before any NN_IqFF_Run() call */
 
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
-  float ff = NN_IqFF_Run(50, 52, 17, 0.49);
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+  // HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+  // float ff = NN_IqFF_Run(50, 52, 17, 0.49);
+  // HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
 
   Encoder_Init(&encoder, &htim2, 2000);
 
@@ -336,6 +336,7 @@ int main(void)
         if (ff < -iq_lim) ff = -iq_lim;
         motor_control.iq_ff = ff;
     }
+
 
     /* Temperature watchdog at 1 Hz (ADC2 polled, not interrupt-driven) */
     static uint32_t temp_last_ms = 0;
