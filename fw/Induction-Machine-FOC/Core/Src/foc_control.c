@@ -137,7 +137,7 @@ void svpwm_test(void) {
 
     // Rotate for 5 seconds
     for (int i= 0; i < 5000; i++) {
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_SET);
+        // HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_S??ET);
         theta += d_theta;
         if(theta > 6.2831f) theta -= 6.2831f;
         
@@ -156,7 +156,7 @@ void svpwm_test(void) {
         {
             HAL_ADC_Start_IT(&hadc2);
         }
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
+        // HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9, GPIO_PIN_RESET);
     }
 
     // 4. Stop

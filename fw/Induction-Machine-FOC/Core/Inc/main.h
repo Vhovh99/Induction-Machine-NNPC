@@ -70,6 +70,8 @@ void PWM_START(void);
 #define PHASE_A_CURR_GPIO_Port GPIOA
 #define VBUS_SENS_Pin GPIO_PIN_1
 #define VBUS_SENS_GPIO_Port GPIOA
+#define RELAY11_Pin GPIO_PIN_4
+#define RELAY11_GPIO_Port GPIOA
 #define FAULT_Pin GPIO_PIN_6
 #define FAULT_GPIO_Port GPIOA
 #define UL_PWM_Pin GPIO_PIN_7
@@ -82,20 +84,30 @@ void PWM_START(void);
 #define RELAY1_GPIO_Port GPIOB
 #define RELAY2_Pin GPIO_PIN_12
 #define RELAY2_GPIO_Port GPIOB
-#define RELAY6_Pin GPIO_PIN_6
-#define RELAY6_GPIO_Port GPIOC
-#define RELAY7_Pin GPIO_PIN_7
-#define RELAY7_GPIO_Port GPIOC
-#define RELAY8_Pin GPIO_PIN_8
-#define RELAY8_GPIO_Port GPIOC
-#define RELAY9_Pin GPIO_PIN_9
-#define RELAY9_GPIO_Port GPIOC
+#define RELAY3_Pin GPIO_PIN_6
+#define RELAY3_GPIO_Port GPIOC
+#define RELAY4_Pin GPIO_PIN_7
+#define RELAY4_GPIO_Port GPIOC
+#define RELAY5_Pin GPIO_PIN_8
+#define RELAY5_GPIO_Port GPIOC
+#define RELAY12_Pin GPIO_PIN_9
+#define RELAY12_GPIO_Port GPIOC
 #define UH_PWM_Pin GPIO_PIN_8
 #define UH_PWM_GPIO_Port GPIOA
 #define VH_PWM_Pin GPIO_PIN_9
 #define VH_PWM_GPIO_Port GPIOA
 #define WH_PWM_Pin GPIO_PIN_10
 #define WH_PWM_GPIO_Port GPIOA
+#define RELAY6_Pin GPIO_PIN_12
+#define RELAY6_GPIO_Port GPIOA
+#define RELAY7_Pin GPIO_PIN_12
+#define RELAY7_GPIO_Port GPIOC
+#define RELAY8_Pin GPIO_PIN_2
+#define RELAY8_GPIO_Port GPIOD
+#define RELAY9_Pin GPIO_PIN_6
+#define RELAY9_GPIO_Port GPIOB
+#define RELAY10_Pin GPIO_PIN_7
+#define RELAY10_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

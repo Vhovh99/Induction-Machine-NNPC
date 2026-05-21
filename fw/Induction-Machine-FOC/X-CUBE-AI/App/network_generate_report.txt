@@ -1,6 +1,6 @@
 ST Edge AI Core v2.2.0-20266 2adc00962
-Created date          : 2026-03-20 21:06:48
-Parameters            : generate --target stm32g4 --name network -m /home/vardan/Projects/Polytech/Induction-Machine-NNPC/scripts/python/NN-Training/model/iq_ff_float32.tflite --compression none --verbosity 1 -O time --workspace /tmp/mxAI_workspace129916461968536843975410939509414 --output /home/vardan/.stm32cubemx/network_output
+Created date          : 2026-05-21 21:58:37
+Parameters            : generate --target stm32g4 --name network -m /home/vardan/Projects/Polytech/Induction-Machine-NNPC/scripts/python/NN-Training/model/iq_ff_float32.tflite --compression none --verbosity 1 -O time --workspace /tmp/mxAI_workspace151104733794215207904863638276012 --output /home/vardan/.stm32cubemx/network_output
 
 Exec/report summary (generate)
 -------------------------------------------------------------------------------------------------------------------------------------
@@ -11,7 +11,7 @@ compression        :   none
 options            :   allocate-inputs, allocate-outputs                                                                             
 optimization       :   time                                                                                                          
 target/series      :   stm32g4                                                                                                       
-workspace dir      :   /tmp/mxAI_workspace129916461968536843975410939509414                                                          
+workspace dir      :   /tmp/mxAI_workspace151104733794215207904863638276012                                                          
 output dir         :   /home/vardan/.stm32cubemx/network_output                                                                      
 model_fmt          :   float                                                                                                         
 model_name         :   iq_ff_float32                                                                                                 
